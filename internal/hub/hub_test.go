@@ -94,6 +94,9 @@ func fakeDocker(t *testing.T) *docker.Client {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// The scanner container: exists, then create, start, wait, logs, remove.
 		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/images/sha256:img") && strings.HasSuffix(r.URL.Path, "/json"):
+			_, _ = io.WriteString(w, `{"Id":"`+strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/images/"), "/json")+`"}`)
+			return
 		case r.Method == http.MethodGet && r.URL.Path == scannerImage:
 			_, _ = io.WriteString(w, `{"Id":"sha256:scanner"}`)
 			return

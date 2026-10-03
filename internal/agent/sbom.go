@@ -42,6 +42,14 @@ func (g *SBOMGenerator) Generate(ctx context.Context, imageID string) ([]byte, e
 	if !strings.HasPrefix(imageID, "sha256:") || strings.ContainsAny(imageID, " /") {
 		return nil, fmt.Errorf("refusing image ID %q", imageID)
 	}
+	// A running container can outlive its image, for example after a compose
+	// rebuild removes the old one. Say so plainly rather than letting the
+	// scanner fall back to a registry it cannot reach.
+	if present, err := g.Docker.ImageExists(ctx, imageID); err != nil {
+		return nil, fmt.Errorf("check image: %w", err)
+	} else if !present {
+		return nil, errors.New("image is no longer on the host; a container still runs it, so recreate the container")
+	}
 	ref := ScannerRepository + "@" + ScannerDigest
 	ok, err := g.Docker.ImageExists(ctx, ref)
 	if err != nil {
