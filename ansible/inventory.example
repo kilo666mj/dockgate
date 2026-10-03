@@ -1,2 +1,10 @@
 [dockgate]
-dockgate.example.com ansible_user=root
+dockgate.example.net ansible_user=root
+
+[dockgate_agents]
+alpha.example.net ansible_user=root
+bravo.example.net ansible_user=root dockgate_agent_goarch=arm64
+
+[dockgate_agents:vars]
+dockgate_server_url=https://dockgate.example.net:8443
+dockgate_server_inventory_host=dockgate.example.net

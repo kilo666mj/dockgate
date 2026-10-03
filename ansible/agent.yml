@@ -1,0 +1,191 @@
+---
+# Install the dockgate agent on Docker hosts and enroll each one once.
+# Enrollment mints a short-lived join token on the server host and uses it
+# immediately, so tokens never land in inventory or on disk.
+- name: Deploy dockgate agents
+  hosts: dockgate_agents
+  become: true
+
+  tasks:
+    - name: Check required settings
+      ansible.builtin.assert:
+        that:
+          - dockgate_server_url is match('^https://')
+          - dockgate_server_inventory_host | length > 0
+        fail_msg: Set dockgate_server_url and dockgate_server_inventory_host for agent hosts.
+
+    - name: Record the commit being deployed
+      ansible.builtin.command:
+        cmd: git describe --tags --always --dirty
+        chdir: "{{ playbook_dir }}/.."
+      register: dockgate_git_version
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+
+    - name: Build dockgate locally for each architecture
+      ansible.builtin.command:
+        cmd: >-
+          go build -trimpath
+          -ldflags "-s -w -X main.version={{ dockgate_git_version.stdout }}"
+          -o {{ playbook_dir }}/../dockgate-linux-{{ item }} .
+        chdir: "{{ playbook_dir }}/.."
+      environment:
+        CGO_ENABLED: "0"
+        GOOS: linux
+        GOARCH: "{{ item }}"
+        GOTOOLCHAIN: "{{ dockgate_go_toolchain }}"
+      loop: "{{ ansible_play_hosts | map('extract', hostvars, 'dockgate_agent_goarch') | unique | list }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: true
+
+    - name: Create agent user
+      ansible.builtin.user:
+        name: "{{ dockgate_agent_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        home: "{{ dockgate_agent_state_dir }}"
+        create_home: false
+
+    - name: Create state directory
+      ansible.builtin.file:
+        path: "{{ dockgate_agent_state_dir }}"
+        state: directory
+        owner: "{{ dockgate_agent_user }}"
+        group: "{{ dockgate_agent_user }}"
+        mode: "0700"
+
+    - name: Create config directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: root
+        group: "{{ dockgate_agent_user }}"
+        mode: "0750"
+      loop:
+        - "{{ dockgate_agent_config_dir }}"
+        - "{{ dockgate_agent_config_dir }}/docker"
+
+    - name: Install binary
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../dockgate-linux-{{ dockgate_agent_goarch }}"
+        dest: "{{ dockgate_agent_binary }}"
+        owner: root
+        group: root
+        mode: "0755"
+      notify: Restart dockgate-agent
+
+    - name: Install environment
+      ansible.builtin.template:
+        src: templates/dockgate-agent.env.j2
+        dest: "{{ dockgate_agent_config_dir }}/agent.env"
+        owner: root
+        group: "{{ dockgate_agent_user }}"
+        mode: "0640"
+      notify: Restart dockgate-agent
+
+    - name: Install systemd unit
+      ansible.builtin.template:
+        src: templates/dockgate-agent.service.j2
+        dest: /etc/systemd/system/dockgate-agent.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart dockgate-agent
+
+    - name: Check enrollment
+      ansible.builtin.stat:
+        path: "{{ dockgate_agent_state_dir }}/agent.json"
+      register: dockgate_agent_state
+
+    - name: Enroll
+      when: not dockgate_agent_state.stat.exists
+      block:
+        - name: Mint a join token on the server
+          ansible.builtin.command:
+            argv:
+              - runuser
+              - -u
+              - "{{ dockgate_server_user }}"
+              - --
+              - "{{ dockgate_server_binary }}"
+              - server
+              - token
+              - -data-dir
+              - "{{ dockgate_server_data_dir }}"
+              - -name
+              - "{{ dockgate_agent_name }}"
+              - -ttl
+              - 10m
+          delegate_to: "{{ dockgate_server_inventory_host }}"
+          register: dockgate_join_token
+          changed_when: true
+          no_log: true
+
+        - name: Enroll with the server
+          ansible.builtin.command:
+            argv:
+              - runuser
+              - -u
+              - "{{ dockgate_agent_user }}"
+              - --
+              - "{{ dockgate_agent_binary }}"
+              - agent
+              - enroll
+              - -state-dir
+              - "{{ dockgate_agent_state_dir }}"
+              - -server
+              - "{{ dockgate_server_url }}"
+          environment:
+            # Passed in the environment so the token is not visible in ps.
+            DOCKGATE_JOIN_TOKEN: "{{ dockgate_join_token.stdout | trim }}"
+          changed_when: true
+          no_log: true
+
+    - name: Apply service changes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start dockgate-agent
+      ansible.builtin.systemd:
+        name: dockgate-agent
+        enabled: true
+        state: started
+
+    - name: Verify the server has a fresh report from this agent
+      ansible.builtin.command:
+        argv:
+          - runuser
+          - -u
+          - "{{ dockgate_server_user }}"
+          - --
+          - "{{ dockgate_server_binary }}"
+          - server
+          - agents
+          - -data-dir
+          - "{{ dockgate_server_data_dir }}"
+      delegate_to: "{{ dockgate_server_inventory_host }}"
+      register: dockgate_agents_list
+      changed_when: false
+      retries: 12
+      delay: 5
+      until: >-
+        dockgate_agents_list.stdout_lines
+        | select('match', '^' ~ dockgate_agent_name ~ '\s')
+        | select('search', ' ago\s')
+        | select('search', dockgate_git_version.stdout)
+        | list | length > 0
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart dockgate-agent
+      ansible.builtin.systemd:
+        name: dockgate-agent
+        state: restarted

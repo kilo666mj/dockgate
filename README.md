@@ -84,17 +84,29 @@ go test -race ./...
 go vet ./...
 ```
 
-## Deploy the server
+## Deploy
 
 ```sh
 cd ansible
-cp inventory.example inventory                         # then set the real host
+cp inventory.example inventory                         # then set the real hosts
 cp host_vars/example.yml.example host_vars/<host>.yml  # agent hosts, Fleetglass URL
-ansible-playbook playbook.yml
+ansible-playbook playbook.yml                          # server
+ansible-playbook agent.yml                             # agents
 ```
 
-The playbook builds locally, installs a hardened systemd unit, and waits until
+`playbook.yml` builds locally, installs a hardened systemd unit, and waits until
 `/version` reports the deployed commit.
+
+`agent.yml` installs `dockgate-agent.service` on each host in
+`dockgate_agents`, running as a dedicated user in the `docker` group. On a host
+that is not enrolled yet it mints a 10-minute join token on the server host and
+enrolls with it straight away, so tokens never touch the inventory. It then
+waits until the server lists a fresh report from that agent at the deployed
+version. Set `dockgate_server_url` and `dockgate_server_inventory_host` for the
+agent hosts, and `dockgate_agent_goarch=arm64` where needed.
+
+Registry credentials for update checks go in
+`/etc/dockgate-agent/docker/config.json` on the agent host.
 
 ## License
 

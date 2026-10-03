@@ -1,0 +1,25 @@
+---
+# Committed defaults for agent hosts. Real values (server URL and the
+# server's inventory name) belong in the deploy inventory's host_vars, which
+# outrank these.
+dockgate_agent_user: dockgate-agent
+dockgate_agent_state_dir: /var/lib/dockgate-agent
+dockgate_agent_config_dir: /etc/dockgate-agent
+dockgate_agent_binary: /usr/local/bin/dockgate
+dockgate_agent_docker_socket: /var/run/docker.sock
+dockgate_agent_docker_group: docker
+dockgate_agent_update_interval: "6h"
+dockgate_agent_name: "{{ inventory_hostname }}"
+
+# Agents' URL for the server's agent API, e.g. https://dockgate.example.net:8443
+dockgate_server_url: ""
+# Inventory name of the server host; enrollment tokens are minted there.
+dockgate_server_inventory_host: ""
+# Service account and data directory of the server, for minting tokens.
+dockgate_server_user: dockgate
+dockgate_server_data_dir: /var/lib/dockgate
+dockgate_server_binary: /usr/local/bin/dockgate
+
+# linux/amd64 or linux/arm64, per host.
+dockgate_agent_goarch: amd64
+dockgate_go_toolchain: go1.27.1

@@ -1,0 +1,30 @@
+[Unit]
+Description=dockgate agent
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ dockgate_agent_user }}
+Group={{ dockgate_agent_user }}
+# Docker socket access is equivalent to root on this host.
+SupplementaryGroups={{ dockgate_agent_docker_group }}
+EnvironmentFile={{ dockgate_agent_config_dir }}/agent.env
+ExecStart={{ dockgate_agent_binary }} agent run
+Restart=on-failure
+RestartSec=10s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+ReadWritePaths={{ dockgate_agent_state_dir }}
+ReadOnlyPaths={{ dockgate_agent_config_dir }}
+
+[Install]
+WantedBy=multi-user.target
