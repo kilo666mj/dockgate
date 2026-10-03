@@ -1,0 +1,18 @@
+/servicename
+/servicename-*
+/dist/
+*.sqlite
+*.sqlite-*
+*.crt
+*.key
+*.pem
+*.env
+.env
+.DS_Store
+*.retry
+
+# Real hosts and values stay local; the .example files are the templates.
+ansible/inventory
+ansible/host_vars/*.yml
+ansible/host_vars/*.yaml
+ansible/group_vars/*/secret.yml

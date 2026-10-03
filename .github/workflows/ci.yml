@@ -1,0 +1,99 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    # Stable display name for a branch-protection required check.
+    name: tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.27.1"
+          cache: true
+      - name: Lint
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+      - name: Vet
+        run: go vet ./...
+      - name: Check formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: Check go.mod is tidy
+        run: |
+          go mod tidy
+          if [ -n "$(git status --porcelain -- go.mod go.sum)" ]; then
+            echo "go.mod/go.sum are not tidy; run 'go mod tidy':"
+            git status --porcelain -- go.mod go.sum
+            exit 1
+          fi
+      - name: Test
+        run: go test -race ./...
+      - name: Check Ansible syntax
+        working-directory: ansible
+        run: |
+          pipx install ansible-core
+          cp inventory.example inventory
+          ansible-playbook --syntax-check playbook.yml
+
+  build:
+    name: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.27.1"
+          cache: true
+      - name: Build
+        run: go build ./...
+
+  # On a vX.Y.Z tag, publish static Linux binaries and checksums. The release
+  # waits for the same checks as a pull request, so a tag cannot skip them.
+  release:
+    needs: [test, build]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: "1.27.1"
+          cache: true
+      - name: Build static binaries
+        env:
+          VERSION: ${{ github.ref_name }}
+          CGO_ENABLED: "0"
+          GOOS: linux
+        run: |
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            GOARCH=$arch go build -trimpath \
+              -ldflags "-s -w -X main.version=${VERSION}" \
+              -o "dist/servicename-linux-${arch}" .
+          done
+          (cd dist && sha256sum servicename-* > SHA256SUMS)
+      - name: Publish release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3
+        with:
+          generate_release_notes: true
+          files: dist/*

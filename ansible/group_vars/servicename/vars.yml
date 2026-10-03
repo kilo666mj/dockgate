@@ -1,0 +1,14 @@
+---
+# Committed defaults. This repository may be public: keep real hostnames,
+# addresses and secrets in gitignored host_vars files or an Ansible Vault.
+servicename_user: servicename
+servicename_group: servicename
+servicename_data_dir: /var/lib/servicename
+servicename_config_dir: /etc/servicename
+servicename_binary: /usr/local/bin/servicename
+servicename_listen: "127.0.0.1:8080"
+
+# Built locally and copied to the host.
+servicename_goos: linux
+servicename_goarch: amd64
+servicename_go_toolchain: go1.27.1

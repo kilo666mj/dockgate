@@ -1,0 +1,30 @@
+name: documentation
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out pinned documentation validator
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: kilo666mj/michaelspost-docs
+          ref: d2ec52dfb9498cded5e2cba4516784d87ed7ec18
+          path: .documentation-tooling
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.14"
+      - name: Validate repository documentation
+        working-directory: .documentation-tooling
+        run: python -m scripts.check_source_docs "$GITHUB_WORKSPACE"

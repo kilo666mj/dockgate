@@ -1,0 +1,4 @@
+---
+# Copy to host_vars/<inventory-hostname>.yml (gitignored) for real values.
+# host_vars outranks group_vars, so anything set here overrides vars.yml.
+servicename_listen: "0.0.0.0:8080"

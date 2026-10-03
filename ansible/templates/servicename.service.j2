@@ -1,0 +1,28 @@
+[Unit]
+Description=servicename
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ servicename_user }}
+Group={{ servicename_group }}
+EnvironmentFile={{ servicename_config_dir }}/servicename.env
+ExecStart={{ servicename_binary }}
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+ReadWritePaths={{ servicename_data_dir }}
+ReadOnlyPaths={{ servicename_config_dir }}
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,121 @@
+---
+- name: Deploy servicename
+  hosts: servicename
+  become: true
+
+  tasks:
+    - name: Record the commit being deployed
+      ansible.builtin.command:
+        cmd: git describe --tags --always --dirty
+        chdir: "{{ playbook_dir }}/.."
+      register: servicename_git_version
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: false
+
+    - name: Build servicename locally
+      ansible.builtin.command:
+        cmd: >-
+          go build -trimpath
+          -ldflags "-s -w -X main.version={{ servicename_git_version.stdout }}"
+          -o {{ playbook_dir }}/../servicename-{{ servicename_goos }}-{{ servicename_goarch }} .
+        chdir: "{{ playbook_dir }}/.."
+      environment:
+        CGO_ENABLED: "0"
+        GOOS: "{{ servicename_goos }}"
+        GOARCH: "{{ servicename_goarch }}"
+        GOTOOLCHAIN: "{{ servicename_go_toolchain }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      changed_when: true
+
+    - name: Create group
+      ansible.builtin.group:
+        name: "{{ servicename_group }}"
+        system: true
+
+    - name: Create user
+      ansible.builtin.user:
+        name: "{{ servicename_user }}"
+        group: "{{ servicename_group }}"
+        home: "{{ servicename_data_dir }}"
+        create_home: false
+        system: true
+        shell: /usr/sbin/nologin
+
+    - name: Create data directory
+      ansible.builtin.file:
+        path: "{{ servicename_data_dir }}"
+        state: directory
+        owner: "{{ servicename_user }}"
+        group: "{{ servicename_group }}"
+        mode: "0750"
+
+    - name: Create config directory
+      ansible.builtin.file:
+        path: "{{ servicename_config_dir }}"
+        state: directory
+        owner: root
+        group: "{{ servicename_group }}"
+        mode: "0750"
+
+    - name: Install binary
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../servicename-{{ servicename_goos }}-{{ servicename_goarch }}"
+        dest: "{{ servicename_binary }}"
+        owner: root
+        group: root
+        mode: "0755"
+      notify: Restart servicename
+
+    - name: Install environment
+      ansible.builtin.template:
+        src: templates/servicename.env.j2
+        dest: "{{ servicename_config_dir }}/servicename.env"
+        owner: root
+        group: "{{ servicename_group }}"
+        mode: "0640"
+      notify: Restart servicename
+
+    - name: Install systemd unit
+      ansible.builtin.template:
+        src: templates/servicename.service.j2
+        dest: /etc/systemd/system/servicename.service
+        owner: root
+        group: root
+        mode: "0644"
+      notify:
+        - Reload systemd
+        - Restart servicename
+
+    - name: Apply service changes
+      ansible.builtin.meta: flush_handlers
+
+    - name: Enable and start servicename
+      ansible.builtin.systemd:
+        name: servicename
+        enabled: true
+        state: started
+
+    - name: Verify readiness and running version
+      ansible.builtin.uri:
+        url: "http://{{ servicename_listen | regex_replace('^0\\.0\\.0\\.0', '127.0.0.1') }}/version"
+        return_content: true
+      register: servicename_version_check
+      retries: 10
+      delay: 2
+      until: >-
+        servicename_version_check.status == 200 and
+        servicename_version_check.json.version == servicename_git_version.stdout
+
+  handlers:
+    - name: Reload systemd
+      ansible.builtin.systemd:
+        daemon_reload: true
+
+    - name: Restart servicename
+      ansible.builtin.systemd:
+        name: servicename
+        state: restarted
