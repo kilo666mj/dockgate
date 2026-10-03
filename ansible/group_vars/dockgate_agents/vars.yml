@@ -11,6 +11,8 @@ dockgate_agent_binary: /usr/local/bin/dockgate-agent
 dockgate_agent_docker_socket: /var/run/docker.sock
 dockgate_agent_docker_group: docker
 dockgate_agent_update_interval: "6h"
+# Generate SBOMs the server asks for (vulnerability scanning).
+dockgate_agent_scan: true
 dockgate_agent_name: "{{ inventory_hostname }}"
 # Absolute path: sudo's secure_path on some hosts omits /usr/sbin.
 dockgate_runuser: /usr/sbin/runuser
