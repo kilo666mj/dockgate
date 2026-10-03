@@ -59,8 +59,9 @@ One Go module, one binary, two subcommands: `dockgate server` and
   labels.
 - Checks registries for updates with a manifest `HEAD` per tag, using
   credentials configured on the agent. Never pulls just to check.
-- Scans with Trivy (and optionally Grype) per image digest, caches results
-  locally keyed by digest and scanner database version.
+- Generates a software bill of materials (SBOM) once per new image digest
+  and sends it to the server, which does the vulnerability matching. See
+  [Vulnerability scanning](#vulnerability-scanning).
 - Polls the server for jobs on each check-in and executes only allow-listed
   operations:
   - `pull` an image reference;
@@ -82,6 +83,71 @@ One Go module, one binary, two subcommands: `dockgate server` and
 - Exports summary checks to a fleet monitor over its ingest API.
 - Audit log of every job: who requested it, gate decision, agent result.
 
+## Vulnerability scanning
+
+The agent inventories each image; the server finds the vulnerabilities. The
+split keeps the vulnerability database in one place and lets the server
+rescan the whole fleet without touching any host.
+
+### On the agent: one SBOM per digest
+
+1. When a container runs an image digest the server has no SBOM for, the
+   server asks the agent for one on the next check-in. The same digest on
+   several hosts is inventoried once.
+2. The agent runs Trivy in a short-lived container against the local image
+   and produces a CycloneDX SBOM (`trivy image --format cyclonedx`). Nothing
+   is pulled or exported off the host.
+3. The scanner image is pinned **by digest** (`aquasec/trivy@sha256:...`),
+   not by tag, and bumped deliberately. A tag can be repointed upstream, and
+   the scanner has Docker socket access.
+4. The agent uploads the SBOM, compressed, keyed by image digest.
+
+Mounting the socket `:ro` does not make the Docker API read-only; it only
+stops the file itself being replaced. Any process with the socket has full
+Docker access, which is why the scanner image is pinned. Generating an SBOM
+needs no vulnerability database, so the container should run with
+`--network none`; confirm the exact Trivy flags for that in phase 2.
+
+### On the server: matching against one database
+
+- The server keeps the Trivy vulnerability database and refreshes it on a
+  schedule. Agents never download it.
+- It matches each stored SBOM (`trivy sbom`) and stores the results.
+- When the database updates, the server re-matches every stored SBOM. New
+  CVEs for running images appear without any agent work.
+- Grype is optional and off by default. When enabled it also runs
+  server-side against the same SBOMs, and findings are merged by
+  vulnerability ID and package so a CVE reported by both counts once.
+
+SBOM-based matching relies on the SBOM recording OS and package details
+accurately. Phase 2 should compare SBOM results with a direct
+`trivy image` scan on a few real images before relying on it.
+
+### Findings
+
+Findings are stored as rows, not as an opaque scan blob:
+vulnerability ID, package, installed version, fixed version (if any),
+severity, and which scanners reported it. Rows make the update gate's diff
+a query ("the candidate adds CVE-X and fixes 12 others") and make
+cross-fleet questions ("which hosts run anything with CVE-Y?") cheap.
+
+### Triggers
+
+- a new image digest appears on any host;
+- the vulnerability database updates (server-only re-match);
+- a candidate image arrives for the update gate (the agent pulls it,
+  generates its SBOM, and the server matches it before deciding).
+
+### Noise control
+
+- Alert only on new findings at or above a configured severity that have a
+  fix available. Everything is still recorded and visible.
+- An ignore list scoped to a vulnerability ID, optionally a package or image
+  repository, with a required reason and an expiry date. Expired entries
+  alert again.
+- Alerts fire on change (a new finding, a fix becoming available), not on
+  every rescan.
+
 ## Gate features
 
 ### 1. Update gate
@@ -89,8 +155,9 @@ One Go module, one binary, two subcommands: `dockgate server` and
 When an update is requested (or found, if auto-update is enabled for a
 container):
 
-1. The agent pulls the candidate image and scans it.
-2. The server diffs the candidate scan against the running image's scan.
+1. The agent pulls the candidate image and sends its SBOM.
+2. The server matches it and diffs the candidate's findings against the
+   running image's findings.
 3. Policy decides:
    - **allow** when the candidate introduces no new findings at or above the
      configured severity;
@@ -135,8 +202,13 @@ should reuse `go.michaelspost.com/gatekit` where its concerns fit.
   compose project/service, labels, last seen.
 - `images` — digest, refs, size, created.
 - `update_checks` — container, current digest, remote digest, checked at.
+- `sboms` — digest, format, scanner version, compressed document, created.
 - `scans` — digest, scanner, scanner db version, counts by severity,
-  findings (compressed JSON), scanned at.
+  scanned at.
+- `findings` — scan, vulnerability ID, package, installed version, fixed
+  version, severity.
+- `vuln_ignores` — vulnerability ID, optional package/repository scope,
+  reason, expires, created by.
 - `policy_violations` — container, rule, first/last seen, acknowledged.
 - `jobs` — kind, target, requested by, gate decision, approval, state,
   result, timestamps.
@@ -147,8 +219,10 @@ should reuse `go.michaelspost.com/gatekit` where its concerns fit.
 1. **Reporting.** Agent and server with enrollment and mTLS; container and
    image inventory; update checks; fleet monitor export. Run alongside the
    current tool on one host.
-2. **Scanning.** Trivy integration, per-digest cache, severity summaries,
-   alerts for new criticals.
+2. **Scanning.** Agent SBOM generation with a digest-pinned Trivy image;
+   server-side database and matching; findings rows; re-match on database
+   update; ignore list; alerts on new fixable findings. Validate SBOM results
+   against direct image scans.
 3. **UI and updates.** OIDC sign-in, fleet and host views, job queue,
    update gate, audit log.
 4. **Policy (audit).** Rules, exception labels, violation reporting.
@@ -158,9 +232,7 @@ should reuse `go.michaelspost.com/gatekit` where its concerns fit.
 
 ## Open questions
 
-- Run the scanner as an embedded library, a bundled binary, or a sidecar
-  container? A binary keeps the agent image small and the scanner updatable.
-- Share one vulnerability database mirror for all agents to avoid every host
-  downloading it?
+- Run the server's Trivy as a bundled binary or call it as a container? The
+  agent side is settled: a short-lived, digest-pinned container.
 - Ship the agent as a container (needs the socket mounted) or a systemd
   service (simpler socket access, Ansible-native)?
