@@ -5,7 +5,9 @@
 dockgate_agent_user: dockgate-agent
 dockgate_agent_state_dir: /var/lib/dockgate-agent
 dockgate_agent_config_dir: /etc/dockgate-agent
-dockgate_agent_binary: /usr/local/bin/dockgate
+# Separate from the server binary so a host running both restarts each one
+# when its own copy changes.
+dockgate_agent_binary: /usr/local/bin/dockgate-agent
 dockgate_agent_docker_socket: /var/run/docker.sock
 dockgate_agent_docker_group: docker
 dockgate_agent_update_interval: "6h"
