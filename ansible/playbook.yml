@@ -80,6 +80,8 @@
       notify: Restart dockgate
 
     - name: Install environment
+      # The file holds secrets; never show it in --diff output.
+      diff: false
       ansible.builtin.template:
         src: templates/dockgate.env.j2
         dest: "{{ dockgate_config_dir }}/dockgate.env"
