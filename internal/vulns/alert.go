@@ -95,6 +95,7 @@ func (a *Alerter) check(ctx context.Context) error {
 		if _, err := a.Publisher.Publish(ctx, card); err != nil {
 			return fmt.Errorf("publish baseline: %w", err)
 		}
+		a.Logger.Info("vulnerability alert baseline sent", "findings", len(keys), "hosts", len(byHost))
 		if err := a.Store.MarkAlerted(ctx, keys, now); err != nil {
 			return err
 		}
@@ -111,6 +112,7 @@ func (a *Alerter) check(ctx context.Context) error {
 		if _, err := a.Publisher.Publish(ctx, card); err != nil {
 			return fmt.Errorf("publish alert for %s: %w", host, err)
 		}
+		a.Logger.Info("vulnerability alert sent", "host", host, "findings", len(byHost[host]))
 		var hostKeys []store.AlertKey
 		for _, f := range byHost[host] {
 			hostKeys = append(hostKeys, store.AlertKey{Repository: store.Repository(f.Image), VulnID: f.VulnID, Pkg: f.Pkg})

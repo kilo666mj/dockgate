@@ -35,6 +35,9 @@ const (
 // Run scans until ctx ends.
 func (s *Scanner) Run(ctx context.Context) {
 	var lastRefresh time.Time
+	// Check alerts after the first pass even if it scanned nothing, so a
+	// restart does not delay alerts until the next new image.
+	first := true
 	for {
 		if time.Since(lastRefresh) >= s.RefreshEvery {
 			if err := s.Matcher.RefreshDB(ctx); err != nil {
@@ -45,8 +48,9 @@ func (s *Scanner) Run(ctx context.Context) {
 		}
 		if n, err := s.Pass(ctx); err != nil && ctx.Err() == nil {
 			s.Logger.Error("scan pass", "err", err)
-		} else if n > 0 && s.AfterPass != nil {
+		} else if (n > 0 || first) && s.AfterPass != nil {
 			s.AfterPass(ctx)
+			first = false
 		}
 		select {
 		case <-ctx.Done():
