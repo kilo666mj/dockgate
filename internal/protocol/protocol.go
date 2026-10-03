@@ -1,0 +1,126 @@
+// Package protocol defines the messages exchanged between the dockgate agent
+// and server, and the join token an operator hands to a new agent.
+package protocol
+
+import (
+	"time"
+)
+
+// API paths on the server's agent listener.
+const (
+	PathEnroll = "/v1/enroll"
+	PathRenew  = "/v1/agent/renew"
+	PathReport = "/v1/agent/report"
+)
+
+// EnrollRequest is sent once, without a client certificate, to exchange a
+// join token for a client certificate.
+type EnrollRequest struct {
+	TokenID     string `json:"token_id"`
+	TokenSecret string `json:"token_secret"`
+	// Name is the agent's display name; the server uses the token's name
+	// when the token carries one.
+	Name string `json:"name"`
+	// CSR is a PEM-encoded certificate signing request for the agent's key.
+	CSR string `json:"csr"`
+}
+
+// EnrollResponse carries the agent's identity and certificates.
+type EnrollResponse struct {
+	AgentID string `json:"agent_id"`
+	Name    string `json:"name"`
+	// Certificate is the PEM-encoded client certificate.
+	Certificate string `json:"certificate"`
+	// CA is the PEM-encoded CA certificate the agent must trust.
+	CA string `json:"ca"`
+}
+
+// RenewRequest asks for a fresh certificate for the agent's existing key.
+// It is sent over mTLS with the current certificate.
+type RenewRequest struct {
+	CSR string `json:"csr"`
+}
+
+// RenewResponse carries the renewed certificate.
+type RenewResponse struct {
+	Certificate string `json:"certificate"`
+}
+
+// Report is the agent's periodic snapshot of its Docker host.
+type Report struct {
+	AgentVersion string      `json:"agent_version"`
+	Hostname     string      `json:"hostname"`
+	CollectedAt  time.Time   `json:"collected_at"`
+	Docker       DockerInfo  `json:"docker"`
+	Containers   []Container `json:"containers"`
+	Images       []Image     `json:"images"`
+	// Errors lists collection problems that did not stop the report.
+	Errors []string `json:"errors,omitempty"`
+}
+
+// DockerInfo describes the Docker engine on the host.
+type DockerInfo struct {
+	Version       string `json:"version"`
+	APIVersion    string `json:"api_version"`
+	OS            string `json:"os"`
+	Arch          string `json:"arch"`
+	KernelVersion string `json:"kernel_version"`
+	CPUs          int    `json:"cpus"`
+	MemoryBytes   int64  `json:"memory_bytes"`
+}
+
+// Container is one container on the host.
+type Container struct {
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	Image          string            `json:"image"`
+	ImageID        string            `json:"image_id"`
+	State          string            `json:"state"`
+	Status         string            `json:"status"`
+	Health         string            `json:"health,omitempty"`
+	RestartCount   int               `json:"restart_count"`
+	Created        time.Time         `json:"created"`
+	StartedAt      time.Time         `json:"started_at,omitzero"`
+	ComposeProject string            `json:"compose_project,omitempty"`
+	ComposeService string            `json:"compose_service,omitempty"`
+	Labels         map[string]string `json:"labels,omitempty"`
+	Update         *UpdateCheck      `json:"update,omitempty"`
+}
+
+// Image is one image on the host.
+type Image struct {
+	ID          string    `json:"id"`
+	RepoTags    []string  `json:"repo_tags,omitempty"`
+	RepoDigests []string  `json:"repo_digests,omitempty"`
+	SizeBytes   int64     `json:"size_bytes"`
+	Created     time.Time `json:"created"`
+}
+
+// Update check outcomes.
+const (
+	UpdateCurrent     = "current"
+	UpdateAvailable   = "available"
+	UpdateUnknown     = "unknown"     // the check could not decide, see Error
+	UpdateUnsupported = "unsupported" // the image reference cannot be checked
+)
+
+// UpdateCheck is the result of comparing a container's image with its
+// registry tag.
+type UpdateCheck struct {
+	Status       string    `json:"status"`
+	Reference    string    `json:"reference"`
+	LocalDigests []string  `json:"local_digests,omitempty"`
+	RemoteDigest string    `json:"remote_digest,omitempty"`
+	CheckedAt    time.Time `json:"checked_at"`
+	Error        string    `json:"error,omitempty"`
+}
+
+// ReportResponse tells the agent when to report next.
+type ReportResponse struct {
+	NextReportSeconds int `json:"next_report_seconds"`
+}
+
+// Error is the JSON body of a failed API request.
+type Error struct {
+	Error string `json:"error"`
+}

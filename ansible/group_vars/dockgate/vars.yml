@@ -12,3 +12,14 @@ dockgate_listen: "127.0.0.1:8080"
 dockgate_goos: linux
 dockgate_goarch: amd64
 dockgate_go_toolchain: go1.27.1
+
+# Agent API: mutual TLS, so expose it directly rather than through a
+# TLS-terminating proxy. Agents must reach one of dockgate_agent_hosts.
+dockgate_agent_listen: ":8443"
+dockgate_agent_hosts: []          # set in host_vars, e.g. ["dockgate.example.net"]
+dockgate_report_interval: "1m"
+
+# Fleetglass export; leave the URL empty to disable. Put
+# dockgate_fleetglass_token in group_vars/dockgate/secret.yml (Vault).
+dockgate_fleetglass_url: ""
+dockgate_fleetglass_token: ""

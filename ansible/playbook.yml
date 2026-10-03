@@ -4,6 +4,15 @@
   become: true
 
   tasks:
+    - name: Check required settings
+      ansible.builtin.assert:
+        that:
+          - dockgate_agent_hosts | length > 0
+          - not dockgate_fleetglass_url or dockgate_fleetglass_token
+        fail_msg: >-
+          Set dockgate_agent_hosts (names agents use to reach the server) and,
+          when dockgate_fleetglass_url is set, dockgate_fleetglass_token.
+
     - name: Record the commit being deployed
       ansible.builtin.command:
         cmd: git describe --tags --always --dirty

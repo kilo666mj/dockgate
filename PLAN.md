@@ -192,8 +192,26 @@ API call on that host.
   or revoked fingerprints.
 - Re-keying or moving an agent requires a new enrollment.
 
-This mirrors the fingerprint pinning used by the operator's other gates and
-should reuse `go.michaelspost.com/gatekit` where its concerns fit.
+As built in phase 1:
+
+- The server is its own CA (ECDSA P-256, created in the data directory on
+  first start) and issues its agent-facing TLS certificate for the
+  configured host names. It sends the CA certificate with its chain.
+- A join token is `dgt1.<id>.<secret>.<ca-pin>`: a single-use, expiring
+  credential (only its SHA-256 is stored) plus the SHA-256 of the CA's
+  public key. The agent trusts the server on first contact only if the chain
+  contains a CA with that pin which issued the server certificate.
+- The agent generates its key locally and sends a CSR; the key never leaves
+  the host. The server pins the key's SubjectPublicKeyInfo hash.
+- Client certificates last 90 days and renew over mTLS 30 days before
+  expiry, with the same key. A renewal CSR for a different key is refused.
+- Agents are named by the token (usually the host name). A second agent with
+  an active agent's name needs a `-replace` token, which re-keys the existing
+  agent and keeps its ID and history.
+
+`go.michaelspost.com/gatekit` was considered: its concerns are network
+handshake fingerprinting, Gatehub sync and connection limits, none of which
+apply to enrollment, so it is not used.
 
 ## Data model (initial)
 
@@ -218,7 +236,9 @@ should reuse `go.michaelspost.com/gatekit` where its concerns fit.
 
 1. **Reporting.** Agent and server with enrollment and mTLS; container and
    image inventory; update checks; fleet monitor export. Run alongside the
-   current tool on one host.
+   current tool on one host. *Code complete; not yet deployed. Still to do:
+   an Ansible role for agents, and a first host running next to the old
+   tool.*
 2. **Scanning.** Agent SBOM generation with a digest-pinned Trivy image;
    server-side database and matching; findings rows; re-match on database
    update; ignore list; alerts on new fixable findings. Validate SBOM results
