@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/authn"
 	"github.com/google/go-containerregistry/pkg/name"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
+	"github.com/google/go-containerregistry/pkg/v1/remote/transport"
 
 	"go.michaelspost.com/dockgate/internal/protocol"
 )
@@ -104,7 +106,7 @@ func (c *Checker) Check(ctx context.Context, reference string, repoDigests []str
 	result.CheckedAt = entry.checked
 	if entry.err != nil {
 		result.Status = protocol.UpdateUnknown
-		result.Error = entry.err.Error()
+		result.Error = describe(entry.err)
 		return result
 	}
 	result.RemoteDigest = entry.digest
@@ -139,6 +141,20 @@ func (c *Checker) lookup(ctx context.Context, tag name.Tag) cached {
 	c.cache[key] = entry
 	c.mu.Unlock()
 	return entry
+}
+
+// describe turns registry errors into a short explanation. Registries
+// answer 401 or 404 both for repositories that do not exist and for private
+// ones the agent has no credentials for.
+func describe(err error) string {
+	var terr *transport.Error
+	if errors.As(err, &terr) {
+		switch terr.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+			return fmt.Sprintf("registry returned %d: repository not found, or credentials are needed", terr.StatusCode)
+		}
+	}
+	return err.Error()
 }
 
 // localDigests returns the digests from repoDigests that belong to repo.

@@ -83,8 +83,10 @@ func fakeDocker(t *testing.T) *docker.Client {
 			{"Id":"sha256:img2","RepoTags":["postgres:16-alpine"],"RepoDigests":["postgres@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"],"Size":200,"Created":1700000000}]`,
 		"/containers/json": `[
 			{"Id":"c1","Names":["/redis"],"Image":"valkey/valkey:latest","ImageID":"sha256:img1","State":"running","Status":"Up 2 hours","Labels":{"com.docker.compose.project":"alpha","com.docker.compose.service":"redis"},"Created":1700000000},
+			{"Id":"c3","Names":["/web"],"Image":"alpha-web","ImageID":"sha256:img3","State":"running","Status":"Up","Labels":{"com.docker.compose.project":"alpha","com.docker.compose.service":"web"},"Created":1700000000},
 			{"Id":"c2","Names":["/db"],"Image":"postgres:16-alpine","ImageID":"sha256:img2","State":"running","Status":"Up 2 hours (unhealthy)","Labels":{},"Created":1700000000}]`,
 		"/containers/c1/json": `{"RestartCount":0,"State":{"StartedAt":"2026-10-03T10:00:00Z"},"Config":{"Image":"valkey/valkey:latest"}}`,
+		"/containers/c3/json": `{"RestartCount":0,"State":{"StartedAt":"2026-10-03T10:00:00Z"},"Config":{"Image":"alpha-web"}}`,
 		"/containers/c2/json": `{"RestartCount":3,"State":{"StartedAt":"2026-10-03T10:00:00Z","Health":{"Status":"unhealthy"}},"Config":{"Image":"postgres:16-alpine"}}`,
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -162,6 +164,9 @@ func TestEnrollReportAndRenew(t *testing.T) {
 	}
 	if c := got["redis"]; c.Update == nil || c.Update.Status != protocol.UpdateAvailable || c.ComposeService != "redis" {
 		t.Errorf("redis = %+v, want update available and compose service", c)
+	}
+	if c := got["web"]; c.Update == nil || c.Update.Status != protocol.UpdateUnsupported {
+		t.Errorf("web = %+v, want compose-built image unsupported", c.Update)
 	}
 	if c := got["db"]; c.Update == nil || c.Update.Status != protocol.UpdateCurrent || c.Health != "unhealthy" || c.RestartCount != 3 {
 		t.Errorf("db = %+v, want current, unhealthy, 3 restarts", c)

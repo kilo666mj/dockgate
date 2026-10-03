@@ -79,10 +79,29 @@ func (c *Collector) Collect(ctx context.Context) protocol.Report {
 				pc.Image = reference
 			}
 		}
-		if c.Updates != nil {
+		switch {
+		case c.Updates == nil:
+		case builtByCompose(pc, reference):
+			pc.Update = &protocol.UpdateCheck{
+				Status: protocol.UpdateUnsupported, Reference: reference, CheckedAt: time.Now().UTC(),
+				Error: "image is built locally by docker compose",
+			}
+		default:
 			pc.Update = c.Updates.Check(ctx, reference, digestsByImage[s.ImageID])
 		}
 		r.Containers = append(r.Containers, pc)
 	}
 	return r
+}
+
+// builtByCompose reports whether reference is the name docker compose gives
+// an image it builds for a service without an explicit image name. Such
+// images can carry a repository digest from the local image store, so the
+// digest alone does not show they never came from a registry.
+func builtByCompose(c protocol.Container, reference string) bool {
+	if c.ComposeProject == "" || c.ComposeService == "" {
+		return false
+	}
+	name := c.ComposeProject + "-" + c.ComposeService
+	return reference == name || reference == name+":latest"
 }
