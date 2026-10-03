@@ -1,14 +1,14 @@
 [Unit]
-Description=servicename
+Description=dockgate
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
-User={{ servicename_user }}
-Group={{ servicename_group }}
-EnvironmentFile={{ servicename_config_dir }}/servicename.env
-ExecStart={{ servicename_binary }}
+User={{ dockgate_user }}
+Group={{ dockgate_group }}
+EnvironmentFile={{ dockgate_config_dir }}/dockgate.env
+ExecStart={{ dockgate_binary }}
 Restart=on-failure
 RestartSec=5s
 NoNewPrivileges=true
@@ -21,8 +21,8 @@ ProtectControlGroups=true
 RestrictSUIDSGID=true
 LockPersonality=true
 CapabilityBoundingSet=
-ReadWritePaths={{ servicename_data_dir }}
-ReadOnlyPaths={{ servicename_config_dir }}
+ReadWritePaths={{ dockgate_data_dir }}
+ReadOnlyPaths={{ dockgate_config_dir }}
 
 [Install]
 WantedBy=multi-user.target

@@ -1,4 +1,4 @@
-// Command servicename is a small HTTP service.
+// Command dockgate is the dockgate server; see PLAN.md.
 package main
 
 import (
@@ -13,7 +13,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kilo666mj/go-service-template/internal/server"
+	"go.michaelspost.com/dockgate/internal/server"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -21,14 +21,14 @@ var version = "dev"
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "servicename:", err)
+		fmt.Fprintln(os.Stderr, "dockgate:", err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
-	fs := flag.NewFlagSet("servicename", flag.ContinueOnError)
-	listen := fs.String("listen", envOr("SERVICENAME_LISTEN", "127.0.0.1:8080"), "HTTP listen address")
+	fs := flag.NewFlagSet("dockgate", flag.ContinueOnError)
+	listen := fs.String("listen", envOr("DOCKGATE_LISTEN", "127.0.0.1:8080"), "HTTP listen address")
 	shutdownTimeout := fs.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown timeout")
 	showVersion := fs.Bool("version", false, "print version and exit")
 	if err := fs.Parse(args); err != nil {

@@ -1,0 +1,14 @@
+---
+# Committed defaults. This repository may be public: keep real hostnames,
+# addresses and secrets in gitignored host_vars files or an Ansible Vault.
+dockgate_user: dockgate
+dockgate_group: dockgate
+dockgate_data_dir: /var/lib/dockgate
+dockgate_config_dir: /etc/dockgate
+dockgate_binary: /usr/local/bin/dockgate
+dockgate_listen: "127.0.0.1:8080"
+
+# Built locally and copied to the host.
+dockgate_goos: linux
+dockgate_goarch: amd64
+dockgate_go_toolchain: go1.27.1

@@ -1,3 +1,3 @@
-module github.com/kilo666mj/go-service-template
+module go.michaelspost.com/dockgate
 
 go 1.27.1

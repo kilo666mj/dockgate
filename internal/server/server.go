@@ -1,4 +1,4 @@
-// Package server holds the HTTP handlers for servicename.
+// Package server holds the HTTP handlers for dockgate.
 package server
 
 import (

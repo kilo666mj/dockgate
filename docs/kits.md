@@ -15,13 +15,13 @@ instead of in each service. Pin a tagged release.
 
 ```go
 server := mcpkit.MustServer(mcpkit.ServerConfig{
-    Name:    "servicename",
+    Name:    "dockgate",
     Version: version,
     Logger:  logger,
 })
 
 mcp.AddTool(server, &mcp.Tool{
-    Name:        "servicename_status",
+    Name:        "dockgate_status",
     Description: "Report current status.",
     Annotations: mcpkit.ReadOnly(false),
 }, status)
@@ -38,7 +38,7 @@ auth := oidcrp.New(oidcrp.Config{
     ClientID:        clientID,
     ClientSecret:    clientSecret,
     RedirectURL:     redirectURL,
-    StateCookieName: "servicename_oidc",
+    StateCookieName: "dockgate_oidc",
     LoginPath:       "/login",
     SuccessPath:     "/",
     APIPrefixes:     []string{"/api/"},
@@ -53,18 +53,18 @@ mux.HandleFunc("GET /", auth.Require(index))
 ```go
 client, err := tintwire.New(
     tintwireURL,
-    os.Getenv("SERVICENAME_TINTWIRE_TOKEN"),
-    tintwire.WithMattermostFailover(os.Getenv("SERVICENAME_MATTERMOST_WEBHOOK_URL")),
+    os.Getenv("DOCKGATE_TINTWIRE_TOKEN"),
+    tintwire.WithMattermostFailover(os.Getenv("DOCKGATE_MATTERMOST_WEBHOOK_URL")),
 )
 if err != nil {
     return err
 }
 
 _, err = client.Publish(ctx, tintwire.Card{
-    Channel:  "#servicename",
+    Channel:  "#dockgate",
     Title:    "Something needs attention",
     Severity: tintwire.SeverityWarning,
-    Source:   "servicename",
+    Source:   "dockgate",
 })
 ```
 

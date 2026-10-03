@@ -1,5 +1,5 @@
-/servicename
-/servicename-*
+/dockgate
+/dockgate-*
 /dist/
 *.sqlite
 *.sqlite-*

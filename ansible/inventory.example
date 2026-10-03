@@ -1,2 +1,2 @@
-[servicename]
-servicename.example.com ansible_user=root
+[dockgate]
+dockgate.example.com ansible_user=root
