@@ -109,7 +109,7 @@
         - name: Mint a join token on the server
           ansible.builtin.command:
             argv:
-              - runuser
+              - "{{ dockgate_runuser }}"
               - -u
               - "{{ dockgate_server_user }}"
               - --
@@ -130,7 +130,7 @@
         - name: Enroll with the server
           ansible.builtin.command:
             argv:
-              - runuser
+              - "{{ dockgate_runuser }}"
               - -u
               - "{{ dockgate_agent_user }}"
               - --
@@ -159,7 +159,7 @@
     - name: Verify the server has a fresh report from this agent
       ansible.builtin.command:
         argv:
-          - runuser
+          - "{{ dockgate_runuser }}"
           - -u
           - "{{ dockgate_server_user }}"
           - --
