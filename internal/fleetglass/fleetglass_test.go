@@ -70,7 +70,7 @@ func TestBuildChecks(t *testing.T) {
 		"alpha/agent_health":                "ok",
 		"alpha/container_updates":           "warn",
 		"alpha/container_health":            "bad",
-		"alpha/container_vulnerabilities":   "bad",
+		"alpha/container_vulnerabilities":   "warn",
 		"charlie/container_vulnerabilities": "ok",
 		"charlie/agent_health":              "bad",
 		"charlie/container_updates":         "ok",

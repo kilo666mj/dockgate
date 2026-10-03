@@ -97,7 +97,7 @@ For each agent, filed under source `dockgate` with the agent's name as host:
 | `agent_health` | `checkin` | `bad` when no report for five report intervals; `warn` on collection errors |
 | `container_updates` | `pending_updates` | `warn` when any container's tag points at a newer image |
 | `container_health` | `containers` | `bad` when a container is unhealthy or restarting |
-| `container_vulnerabilities` | `fixable` | `bad` with a fixable critical, `warn` with a fixable high or when an image could not be scanned |
+| `container_vulnerabilities` | `fixable` | `warn` with a fixable critical or high finding, or when an image could not be scanned |
 
 ## Build and test
 

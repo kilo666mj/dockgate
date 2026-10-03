@@ -262,10 +262,9 @@ func vulnCheck(a store.Agent, fs []store.HostFinding, cov store.ScanCoverage, ob
 			"containers": cov.Containers, "scanned": cov.Scanned, "pending": cov.Pending, "failed": cov.Failed,
 		},
 	}
-	switch {
-	case crit > 0:
-		c.Status = "bad"
-	case high > 0:
+	// Fixable criticals warn rather than fail: almost every image has some,
+	// and Fleetglass "bad" is kept for things that need attention now.
+	if crit > 0 || high > 0 {
 		c.Status = "warn"
 	}
 	if cov.Failed > 0 && c.Status == "ok" {
