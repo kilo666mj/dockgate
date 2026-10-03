@@ -142,7 +142,7 @@ func serverRun(args []string) error {
 	trivyBin := fs.String("trivy", envOr("DOCKGATE_TRIVY", "/usr/local/bin/trivy"), "Trivy binary for vulnerability matching; empty disables scanning")
 	dbRefresh := fs.Duration("db-refresh", envDuration("DOCKGATE_DB_REFRESH", 6*time.Hour), "how often to look for a newer vulnerability database")
 	twURL := fs.String("tintwire-url", os.Getenv("DOCKGATE_TINTWIRE_URL"), "Tintwire origin for vulnerability alerts; empty disables alerts (token from DOCKGATE_TINTWIRE_TOKEN)")
-	twChannel := fs.String("tintwire-channel", envOr("DOCKGATE_TINTWIRE_CHANNEL", "dockgate"), "Tintwire channel for alerts")
+	twChannel := fs.String("tintwire-channel", os.Getenv("DOCKGATE_TINTWIRE_CHANNEL"), "Tintwire channel for alerts; empty uses the token's own channel (required for hook tokens)")
 	alertSev := fs.String("alert-severities", envOr("DOCKGATE_ALERT_SEVERITIES", "CRITICAL,HIGH"), "severities of new fixable findings that alert")
 	logLevel := fs.String("log-level", envOr("DOCKGATE_LOG_LEVEL", "info"), "log level")
 	shutdownTimeout := fs.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown timeout")

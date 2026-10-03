@@ -38,5 +38,6 @@ dockgate_db_refresh: "6h"
 # Put dockgate_tintwire_token in group_vars/dockgate/secret.yml (Vault).
 dockgate_tintwire_url: ""
 dockgate_tintwire_token: ""
-dockgate_tintwire_channel: "dockgate"
+# Empty publishes to the token's own channel, which hook tokens require.
+dockgate_tintwire_channel: ""
 dockgate_alert_severities: "CRITICAL,HIGH"
