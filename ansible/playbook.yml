@@ -9,6 +9,7 @@
         that:
           - dockgate_agent_hosts | length > 0
           - dockgate_fleetglass_url | length == 0 or dockgate_fleetglass_token | length > 0
+          - dockgate_tintwire_url | length == 0 or dockgate_tintwire_token | length > 0
         fail_msg: >-
           Set dockgate_agent_hosts (names agents use to reach the server) and,
           when dockgate_fleetglass_url is set, dockgate_fleetglass_token.
@@ -69,6 +70,34 @@
         owner: root
         group: "{{ dockgate_group }}"
         mode: "0750"
+
+    - name: Create Trivy directory
+      ansible.builtin.file:
+        path: "{{ dockgate_trivy_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download pinned Trivy release
+      ansible.builtin.get_url:
+        url: "https://github.com/aquasecurity/trivy/releases/download/v{{ dockgate_trivy_version }}/trivy_{{ dockgate_trivy_version }}_Linux-{{ 'ARM64' if dockgate_goarch == 'arm64' else '64bit' }}.tar.gz"
+        dest: "{{ dockgate_trivy_dir }}/trivy.tar.gz"
+        checksum: "sha256:{{ dockgate_trivy_sha256[dockgate_goarch] }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Unpack Trivy
+      ansible.builtin.unarchive:
+        src: "{{ dockgate_trivy_dir }}/trivy.tar.gz"
+        dest: "{{ dockgate_trivy_dir }}"
+        remote_src: true
+        include: [trivy]
+        creates: "{{ dockgate_trivy_dir }}/trivy"
+        owner: root
+        group: root
+      notify: Restart dockgate
 
     - name: Install binary
       ansible.builtin.copy:

@@ -242,7 +242,10 @@ apply to enrollment, so it is not used.
 2. **Scanning.** Agent SBOM generation with a digest-pinned Trivy image;
    server-side database and matching; findings rows; re-match on database
    update; ignore list; alerts on new fixable findings. Validate SBOM results
-   against direct image scans.
+   against direct image scans. *Built. A prototype on real images gave
+   identical findings for SBOM matching and direct scans (30/30 and 220/220).
+   Trivy is pinned to 0.74.0: image by digest on agents, binary by checksum
+   on the server.*
 3. **UI and updates.** OIDC sign-in, fleet and host views, job queue,
    update gate, audit log.
 4. **Policy (audit).** Rules, exception labels, violation reporting.
@@ -252,7 +255,9 @@ apply to enrollment, so it is not used.
 
 ## Open questions
 
-- Run the server's Trivy as a bundled binary or call it as a container? The
-  agent side is settled: a short-lived, digest-pinned container.
+- Large images take minutes to inventory (one multi-gigabyte image took
+  about 4.5 minutes) because Trivy exports the image from the daemon. The
+  agent works through requests one at a time in the background so reports
+  are not delayed; the server asks for at most two images per report.
 - Ship the agent as a container (needs the socket mounted) or a systemd
   service (simpler socket access, Ansible-native)?

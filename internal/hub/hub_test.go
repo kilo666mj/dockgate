@@ -3,6 +3,7 @@ package hub_test
 import (
 	"context"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,7 +49,7 @@ func startHub(t *testing.T) env {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h, err := hub.New(hub.Config{Store: st, CA: ca, Logger: logger, ReportInterval: 30 * time.Second, CertDir: dir, Hosts: []string{"127.0.0.1"}})
+	h, err := hub.New(hub.Config{Store: st, CA: ca, Logger: logger, ReportInterval: 30 * time.Second, CertDir: dir, Hosts: []string{"127.0.0.1"}, SBOMRequests: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +90,38 @@ func fakeDocker(t *testing.T) *docker.Client {
 		"/containers/c3/json": `{"RestartCount":0,"State":{"StartedAt":"2026-10-03T10:00:00Z"},"Config":{"Image":"alpha-web"}}`,
 		"/containers/c2/json": `{"RestartCount":3,"State":{"StartedAt":"2026-10-03T10:00:00Z","Health":{"Status":"unhealthy"}},"Config":{"Image":"postgres:16-alpine"}}`,
 	}
+	scannerImage := "/images/" + agent.ScannerRepository + "@" + agent.ScannerDigest + "/json"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The scanner container: exists, then create, start, wait, logs, remove.
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == scannerImage:
+			_, _ = io.WriteString(w, `{"Id":"sha256:scanner"}`)
+			return
+		case r.Method == http.MethodPost && r.URL.Path == "/containers/create":
+			var spec struct {
+				HostConfig struct{ NetworkMode string }
+			}
+			_ = json.NewDecoder(r.Body).Decode(&spec)
+			if spec.HostConfig.NetworkMode != "none" {
+				http.Error(w, `{"message":"scanner must have no network"}`, http.StatusBadRequest)
+				return
+			}
+			_, _ = io.WriteString(w, `{"Id":"scan1"}`)
+			return
+		case r.Method == http.MethodPost && r.URL.Path == "/containers/scan1/start":
+			w.WriteHeader(http.StatusNoContent)
+			return
+		case r.Method == http.MethodPost && r.URL.Path == "/containers/scan1/wait":
+			_, _ = io.WriteString(w, `{"StatusCode":0}`)
+			return
+		case r.Method == http.MethodGet && r.URL.Path == "/containers/scan1/logs":
+			_, _ = w.Write(frame(1, `{"bomFormat":"CycloneDX","components":[]}`))
+			_, _ = w.Write(frame(2, "done"))
+			return
+		case r.Method == http.MethodDelete && r.URL.Path == "/containers/scan1":
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		body, ok := responses[r.URL.Path]
 		if !ok {
 			http.Error(w, `{"message":"not found"}`, http.StatusNotFound)
@@ -106,6 +138,15 @@ const (
 	digestCurrent = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	digestNew     = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
+
+// frame encodes one Docker log stream frame.
+func frame(stream byte, payload string) []byte {
+	b := make([]byte, 8+len(payload))
+	b[0] = stream
+	binary.BigEndian.PutUint32(b[4:], uint32(len(payload)))
+	copy(b[8:], payload)
+	return b
+}
 
 func fakeRegistry(_ context.Context, ref name.Reference) (string, error) {
 	switch ref.Context().Name() {
@@ -137,17 +178,28 @@ func TestEnrollReportAndRenew(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	collector := &agent.Collector{Docker: fakeDocker(t), Updates: updates.NewChecker(fakeRegistry, time.Hour), Version: "test"}
+	dc := fakeDocker(t)
+	collector := &agent.Collector{Docker: dc, Updates: updates.NewChecker(fakeRegistry, time.Hour), Version: "test"}
+	sboms := agent.NewSBOMWorker(&agent.SBOMGenerator{Docker: dc, SocketPath: "/var/run/docker.sock"}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	report := collector.Collect(ctx)
 	if len(report.Errors) != 0 {
 		t.Fatalf("collect errors: %v", report.Errors)
 	}
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	go func() { done <- agent.Run(runCtx, id, collector, slog.New(slog.NewTextHandler(io.Discard, nil))) }()
+	go func() {
+		done <- agent.Run(runCtx, id, collector, sboms, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	}()
 	waitFor(t, func() bool {
 		agents, err := e.store.Agents(ctx)
 		return err == nil && len(agents) == 1 && !agents[0].LastReportAt.IsZero()
+	})
+	// The first report reply asks for SBOMs of up to two images; the worker
+	// runs the scanner container and uploads them.
+	waitFor(t, func() bool {
+		_, err1 := e.store.LoadSBOM(ctx, "sha256:img1")
+		_, err2 := e.store.LoadSBOM(ctx, "sha256:img2")
+		return err1 == nil && err2 == nil
 	})
 	cancel()
 	if err := <-done; err != nil {

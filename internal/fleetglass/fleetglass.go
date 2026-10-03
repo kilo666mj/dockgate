@@ -96,14 +96,26 @@ func (e *Exporter) ExportOnce(ctx context.Context) error {
 	return nil
 }
 
-// BuildChecks returns three checks per active agent: check-in freshness,
-// pending image updates, and container health.
+// BuildChecks returns four checks per active agent: check-in freshness,
+// pending image updates, container health and fixable vulnerabilities.
 func BuildChecks(ctx context.Context, st *store.Store, staleAfter time.Duration, now time.Time) ([]Check, error) {
 	agents, err := st.Agents(ctx)
 	if err != nil {
 		return nil, err
 	}
 	observed := now.UTC().Format(time.RFC3339)
+	findings, err := st.ActiveFindings(ctx, "", now)
+	if err != nil {
+		return nil, err
+	}
+	byHost := map[string][]store.HostFinding{}
+	for _, f := range findings {
+		byHost[f.Host] = append(byHost[f.Host], f)
+	}
+	coverage, err := st.Coverage(ctx)
+	if err != nil {
+		return nil, err
+	}
 	var out []Check
 	for _, a := range agents {
 		if !a.RevokedAt.IsZero() {
@@ -117,7 +129,8 @@ func BuildChecks(ctx context.Context, st *store.Store, staleAfter time.Duration,
 		if err != nil {
 			return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 		}
-		out = append(out, updatesCheck(a, containers, observed), healthCheck(a, containers, observed))
+		out = append(out, updatesCheck(a, containers, observed), healthCheck(a, containers, observed),
+			vulnCheck(a, byHost[a.Name], coverage[a.Name], observed))
 	}
 	return out, nil
 }
@@ -199,6 +212,65 @@ func healthCheck(a store.Agent, containers []protocol.Container, observed string
 	if n := len(unhealthy) + len(restarting); n > 0 {
 		c.Status = "bad"
 		c.Summary = fmt.Sprintf("%d unhealthy or restarting containers", n)
+	}
+	return c
+}
+
+// maxListed bounds the findings included in a check's data.
+const maxListed = 25
+
+func vulnCheck(a store.Agent, fs []store.HostFinding, cov store.ScanCoverage, observed string) Check {
+	type listed struct {
+		Container string `json:"container"`
+		Image     string `json:"image"`
+		Vuln      string `json:"vuln"`
+		Package   string `json:"package"`
+		Installed string `json:"installed"`
+		Fixed     string `json:"fixed"`
+		Severity  string `json:"severity"`
+	}
+	// Count distinct vulnerability/package pairs per severity; the same CVE
+	// in several containers sharing an image counts once.
+	fixable := map[string]map[string]bool{}
+	all := map[string]int{}
+	var rows []listed
+	for _, f := range fs {
+		all[f.Severity]++
+		if !f.Fixable() {
+			continue
+		}
+		key := f.VulnID + "|" + f.Pkg
+		if fixable[f.Severity] == nil {
+			fixable[f.Severity] = map[string]bool{}
+		}
+		if fixable[f.Severity][key] {
+			continue
+		}
+		fixable[f.Severity][key] = true
+		if (f.Severity == "CRITICAL" || f.Severity == "HIGH") && len(rows) < maxListed {
+			rows = append(rows, listed{f.Container, f.Image, f.VulnID, f.Pkg, f.Installed, f.Fixed, f.Severity})
+		}
+	}
+	crit, high := len(fixable["CRITICAL"]), len(fixable["HIGH"])
+	c := Check{
+		Source: Source, Host: a.Name, Kind: "container_vulnerabilities", Name: "fixable", ObservedAt: observed,
+		Status: "ok", Summary: fmt.Sprintf("%d critical, %d high fixable vulnerabilities", crit, high),
+		Data: map[string]any{
+			"fixable_critical": crit, "fixable_high": high,
+			"fixable_medium": len(fixable["MEDIUM"]), "fixable_low": len(fixable["LOW"]),
+			"findings_by_severity": all, "listed": nonNil(rows),
+			"containers": cov.Containers, "scanned": cov.Scanned, "pending": cov.Pending, "failed": cov.Failed,
+		},
+	}
+	switch {
+	case crit > 0:
+		c.Status = "bad"
+	case high > 0:
+		c.Status = "warn"
+	}
+	if cov.Failed > 0 && c.Status == "ok" {
+		c.Status = "warn"
+		c.Summary += fmt.Sprintf("; %d containers could not be scanned", cov.Failed)
 	}
 	return c
 }

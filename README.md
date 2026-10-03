@@ -2,11 +2,13 @@
 
 dockgate watches a small fleet of Docker hosts from one place. An agent on
 each host reports containers, images and available image updates to a
-central server over mutual TLS. The server exports per-host checks to
-Fleetglass. Later phases add vulnerability scanning, gated updates and
-policy auditing; see [PLAN.md](PLAN.md).
+central server over mutual TLS, and inventories each image for
+vulnerability scanning. The server exports per-host checks to Fleetglass and
+can alert through Tintwire. Later phases add gated updates and policy
+auditing; see [PLAN.md](PLAN.md).
 
-Status: phase 1 (reporting). There is no web UI yet.
+Status: phases 1 (reporting) and 2 (vulnerability scanning). There is no web
+UI yet.
 
 ## How it works
 
@@ -25,6 +27,19 @@ Status: phase 1 (reporting). There is no web UI yet.
   no Docker Hub rate-limit cost). Each tag is checked at most every
   `-update-interval` (default 6h). Registry credentials come from the agent's
   Docker client configuration (`$DOCKER_CONFIG/config.json`).
+
+- Vulnerability scanning splits the work. For each image the server has no
+  SBOM for, the agent runs Trivy in a throwaway container (pinned by digest,
+  no network, read-only root filesystem, no capabilities) to list the image's
+  packages as a CycloneDX SBOM, and uploads it. The server keeps the
+  vulnerability database, matches every SBOM against it with a pinned Trivy
+  binary, and re-matches the whole fleet when the database updates, without
+  contacting any host. Findings are stored per package, so the same image on
+  several hosts is inventoried once.
+- Alerts go out once per repository, vulnerability and package when a
+  fixable finding at an alerting severity (default critical and high) first
+  appears. The first run records existing findings as a baseline and sends
+  one summary instead of hundreds of alerts.
 
 The agent API uses mutual TLS. Expose its port directly; a proxy that
 terminates TLS in front of it breaks agent authentication.
@@ -50,7 +65,14 @@ sudo -u dockgate dockgate server token -name bravo   # prints a join token
 sudo -u dockgate dockgate server agents
 sudo -u dockgate dockgate server tokens
 sudo -u dockgate dockgate server revoke bravo
+sudo -u dockgate dockgate server vulns [-host bravo] [-all]
+sudo -u dockgate dockgate server ignore add -vuln CVE-2026-1234 [-package openssl] [-image postgres] -reason "..." [-ttl 720h]
+sudo -u dockgate dockgate server ignore list
+sudo -u dockgate dockgate server ignore rm ID
 ```
+
+Ignore rules need a reason and expire (30 days by default); an expired rule
+stops hiding its findings.
 
 Tokens are valid for one hour by default (`-ttl`). Use `-replace` to re-key
 an existing agent, for example after rebuilding its host.
@@ -75,6 +97,7 @@ For each agent, filed under source `dockgate` with the agent's name as host:
 | `agent_health` | `checkin` | `bad` when no report for five report intervals; `warn` on collection errors |
 | `container_updates` | `pending_updates` | `warn` when any container's tag points at a newer image |
 | `container_health` | `containers` | `bad` when a container is unhealthy or restarting |
+| `container_vulnerabilities` | `fixable` | `bad` with a fixable critical, `warn` with a fixable high or when an image could not be scanned |
 
 ## Build and test
 

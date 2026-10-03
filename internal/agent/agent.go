@@ -262,14 +262,18 @@ func (id *Identity) Renew(ctx context.Context, client *http.Client) error {
 	return id.reload()
 }
 
-// Run reports to the server until ctx ends.
-func Run(ctx context.Context, id *Identity, collector *Collector, logger *slog.Logger) error {
+// Run reports to the server until ctx ends. sboms may be nil to disable
+// SBOM generation.
+func Run(ctx context.Context, id *Identity, collector *Collector, sboms *SBOMWorker, logger *slog.Logger) error {
 	client := id.HTTPClient()
 	base, err := serverURL(id.State.Server)
 	if err != nil {
 		return err
 	}
 	reportURL := base.JoinPath(protocol.PathReport).String()
+	if sboms != nil {
+		go sboms.Run(ctx, client, base.JoinPath(protocol.PathSBOM).String())
+	}
 	interval := time.Minute
 	for {
 		if time.Until(id.NotAfter()) < pki.RenewBefore {
@@ -291,6 +295,9 @@ func Run(ctx context.Context, id *Identity, collector *Collector, logger *slog.L
 			logger.Debug("reported", "containers", len(report.Containers), "images", len(report.Images))
 			if resp.NextReportSeconds > 0 {
 				interval = time.Duration(resp.NextReportSeconds) * time.Second
+			}
+			if sboms != nil && len(resp.SBOMRequests) > 0 {
+				sboms.Enqueue(resp.SBOMRequests)
 			}
 		}
 

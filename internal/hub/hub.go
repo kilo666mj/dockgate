@@ -25,6 +25,10 @@ import (
 const (
 	maxEnrollBody = 64 << 10
 	maxReportBody = 16 << 20
+	maxSBOMBody   = 64 << 20
+	// sbomRequestsPerReport bounds how many images one report asks for; the
+	// agent works through them one at a time.
+	sbomRequestsPerReport = 2
 )
 
 // Hub handles agent requests.
@@ -35,6 +39,7 @@ type Hub struct {
 	reportInterval time.Duration
 	certDir        string
 	hosts          []string
+	sbomRequests   bool
 
 	mu   sync.Mutex
 	cert tls.Certificate
@@ -51,6 +56,8 @@ type Config struct {
 	CertDir string
 	// Hosts are the DNS names and IP addresses agents use to reach the hub.
 	Hosts []string
+	// SBOMRequests asks agents for SBOMs of images without one.
+	SBOMRequests bool
 }
 
 // New returns a Hub and issues its server certificate.
@@ -60,7 +67,7 @@ func New(cfg Config) (*Hub, error) {
 	}
 	h := &Hub{
 		store: cfg.Store, ca: cfg.CA, logger: cfg.Logger, reportInterval: cfg.ReportInterval,
-		certDir: cfg.CertDir, hosts: cfg.Hosts,
+		certDir: cfg.CertDir, hosts: cfg.Hosts, sbomRequests: cfg.SBOMRequests,
 	}
 	if err := h.refreshCertificate(); err != nil {
 		return nil, err
@@ -120,6 +127,7 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("POST "+protocol.PathEnroll, h.enroll)
 	mux.HandleFunc("POST "+protocol.PathRenew, h.requireAgent(h.renew))
 	mux.HandleFunc("POST "+protocol.PathReport, h.requireAgent(h.report))
+	mux.HandleFunc("POST "+protocol.PathSBOM, h.requireAgent(h.sbom))
 	return mux
 }
 
@@ -242,8 +250,43 @@ func (h *Hub) report(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusInternalServerError, errors.New("could not save report"))
 		return
 	}
-	h.logger.Debug("report", "agent", agent.Name, "containers", len(rep.Containers), "images", len(rep.Images))
-	h.writeJSON(w, http.StatusOK, protocol.ReportResponse{NextReportSeconds: int(h.reportInterval / time.Second)})
+	resp := protocol.ReportResponse{NextReportSeconds: int(h.reportInterval / time.Second)}
+	if h.sbomRequests {
+		ids, err := h.store.RequestSBOMs(r.Context(), agent.ID, sbomRequestsPerReport, time.Now())
+		if err != nil {
+			h.logger.Error("pick sbom requests", "agent", agent.Name, "err", err)
+		}
+		resp.SBOMRequests = ids
+	}
+	h.logger.Debug("report", "agent", agent.Name, "containers", len(rep.Containers), "images", len(rep.Images), "sbom_requests", len(resp.SBOMRequests))
+	h.writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Hub) sbom(w http.ResponseWriter, r *http.Request) {
+	agent := agentFrom(r.Context())
+	var up protocol.SBOMUpload
+	if !h.decode(w, r, maxSBOMBody, &up) {
+		return
+	}
+	if !strings.HasPrefix(up.ImageID, "sha256:") {
+		h.fail(w, http.StatusBadRequest, errors.New("image_id must be a sha256 image ID"))
+		return
+	}
+	if up.Error == "" && (up.Format != protocol.FormatCycloneDXJSON || len(up.Document) == 0) {
+		h.fail(w, http.StatusBadRequest, errors.New("expected a cyclonedx-json document or an error"))
+		return
+	}
+	if err := h.store.SaveSBOM(r.Context(), agent.ID, up, time.Now()); err != nil {
+		h.logger.Error("save sbom", "agent", agent.Name, "err", err)
+		h.fail(w, http.StatusInternalServerError, errors.New("could not save sbom"))
+		return
+	}
+	if up.Error != "" {
+		h.logger.Warn("agent could not generate sbom", "agent", agent.Name, "image_id", up.ImageID, "err", up.Error)
+	} else {
+		h.logger.Info("sbom received", "agent", agent.Name, "image_id", up.ImageID, "bytes", len(up.Document), "duration_ms", up.DurationMS)
+	}
+	h.writeJSON(w, http.StatusOK, struct{}{})
 }
 
 func (h *Hub) decode(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {

@@ -4,6 +4,7 @@ go 1.27.1
 
 require (
 	github.com/google/go-containerregistry v0.22.1
+	go.michaelspost.com/tintwire-go v0.4.0
 	modernc.org/sqlite v1.60.1
 )
 

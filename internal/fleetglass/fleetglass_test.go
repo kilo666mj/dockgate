@@ -36,18 +36,25 @@ func TestBuildChecks(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	ctx := context.Background()
-	enrolled(t, st, "alpha", "agt_units")
-	enrolled(t, st, "charlie", "agt_mx")
+	enrolled(t, st, "alpha", "agt_alpha")
+	enrolled(t, st, "charlie", "agt_charlie")
 	enrolled(t, st, "fresh", "agt_fresh")
 
 	now := time.Now()
-	if err := st.SaveReport(ctx, "agt_units", protocol.Report{Containers: []protocol.Container{
+	if err := st.SaveReport(ctx, "agt_alpha", protocol.Report{Containers: []protocol.Container{
 		{ID: "1", Name: "redis", State: "running", Update: &protocol.UpdateCheck{Status: protocol.UpdateAvailable, Reference: "valkey/valkey:latest"}},
-		{ID: "2", Name: "db", State: "running", Health: "unhealthy"},
+		{ID: "2", Name: "db", State: "running", Health: "unhealthy", ImageID: "sha256:db"},
 	}}, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SaveReport(ctx, "agt_mx", protocol.Report{}, now.Add(-time.Hour)); err != nil {
+	if err := st.SaveReport(ctx, "agt_charlie", protocol.Report{}, now.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	// A fixable critical in alpha's db image makes its vulnerability check bad.
+	if err := st.SaveSBOM(ctx, "agt_alpha", protocol.SBOMUpload{ImageID: "sha256:db", Format: protocol.FormatCycloneDXJSON, Document: []byte(`{}`)}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveScan(ctx, "sha256:db", "db1", []store.Finding{{VulnID: "CVE-1", Pkg: "libssl3", Installed: "3.0", Fixed: "3.1", Severity: "CRITICAL"}}, "", now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -60,13 +67,15 @@ func TestBuildChecks(t *testing.T) {
 		got[c.Host+"/"+c.Kind] = c.Status
 	}
 	want := map[string]string{
-		"alpha/agent_health":        "ok",
-		"alpha/container_updates":   "warn",
-		"alpha/container_health":    "bad",
-		"charlie/agent_health":      "bad",
-		"charlie/container_updates": "ok",
-		"charlie/container_health":  "ok",
-		"fresh/agent_health":        "warn",
+		"alpha/agent_health":                "ok",
+		"alpha/container_updates":           "warn",
+		"alpha/container_health":            "bad",
+		"alpha/container_vulnerabilities":   "bad",
+		"charlie/container_vulnerabilities": "ok",
+		"charlie/agent_health":              "bad",
+		"charlie/container_updates":         "ok",
+		"charlie/container_health":          "ok",
+		"fresh/agent_health":                "warn",
 	}
 	if len(got) != len(want) {
 		t.Errorf("got %d checks %v, want %d", len(got), got, len(want))
@@ -84,7 +93,7 @@ func TestExportOncePostsWithToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	enrolled(t, st, "alpha", "agt_units")
+	enrolled(t, st, "alpha", "agt_alpha")
 
 	var auth string
 	var posted []Check

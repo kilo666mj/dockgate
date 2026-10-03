@@ -3,6 +3,7 @@
 package protocol
 
 import (
+	"encoding/json"
 	"time"
 )
 
@@ -11,6 +12,7 @@ const (
 	PathEnroll = "/v1/enroll"
 	PathRenew  = "/v1/agent/renew"
 	PathReport = "/v1/agent/report"
+	PathSBOM   = "/v1/agent/sbom"
 )
 
 // EnrollRequest is sent once, without a client certificate, to exchange a
@@ -115,9 +117,27 @@ type UpdateCheck struct {
 	Error        string    `json:"error,omitempty"`
 }
 
-// ReportResponse tells the agent when to report next.
+// ReportResponse tells the agent when to report next and which images the
+// server needs an SBOM for.
 type ReportResponse struct {
 	NextReportSeconds int `json:"next_report_seconds"`
+	// SBOMRequests are local image IDs (sha256:...) to inventory. The agent
+	// decides how; the server never sends a command.
+	SBOMRequests []string `json:"sbom_requests,omitempty"`
+}
+
+// FormatCycloneDXJSON is the only SBOM format agents send.
+const FormatCycloneDXJSON = "cyclonedx-json"
+
+// SBOMUpload carries one image's SBOM, or the reason it could not be made.
+type SBOMUpload struct {
+	ImageID   string `json:"image_id"`
+	Format    string `json:"format,omitempty"`
+	Generator string `json:"generator,omitempty"`
+	// Document is the SBOM itself; empty when Error is set.
+	Document   json.RawMessage `json:"document,omitempty"`
+	Error      string          `json:"error,omitempty"`
+	DurationMS int64           `json:"duration_ms"`
 }
 
 // Error is the JSON body of a failed API request.

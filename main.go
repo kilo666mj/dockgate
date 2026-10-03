@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"text/tabwriter"
@@ -29,6 +30,9 @@ import (
 	"go.michaelspost.com/dockgate/internal/server"
 	"go.michaelspost.com/dockgate/internal/store"
 	"go.michaelspost.com/dockgate/internal/updates"
+	"go.michaelspost.com/dockgate/internal/vulns"
+
+	tintwire "go.michaelspost.com/tintwire-go"
 )
 
 // version is set at build time with -ldflags "-X main.version=...".
@@ -42,6 +46,8 @@ Server commands (run on the central server):
   server tokens            list join tokens
   server agents            list enrolled agents
   server revoke NAME       stop an agent from authenticating
+  server vulns             list fixable vulnerabilities on running containers
+  server ignore add|list|rm  manage vulnerability ignore rules
 
 Agent commands (run on each Docker host):
   agent enroll -server URL -token TOKEN   enroll with the server once
@@ -84,6 +90,10 @@ func run(args []string) error {
 		return serverAgents(rest)
 	case "server revoke":
 		return serverRevoke(rest)
+	case "server vulns":
+		return serverVulns(rest)
+	case "server ignore":
+		return serverIgnore(rest)
 	case "agent enroll":
 		return agentEnroll(rest)
 	case "agent run":
@@ -129,6 +139,11 @@ func serverRun(args []string) error {
 	reportInterval := fs.Duration("report-interval", envDuration("DOCKGATE_REPORT_INTERVAL", time.Minute), "how often agents report")
 	fgURL := fs.String("fleetglass-url", os.Getenv("DOCKGATE_FLEETGLASS_URL"), "Fleetglass base URL; empty disables export (token from DOCKGATE_FLEETGLASS_TOKEN)")
 	fgInterval := fs.Duration("fleetglass-interval", envDuration("DOCKGATE_FLEETGLASS_INTERVAL", 5*time.Minute), "Fleetglass export interval")
+	trivyBin := fs.String("trivy", envOr("DOCKGATE_TRIVY", "/usr/local/bin/trivy"), "Trivy binary for vulnerability matching; empty disables scanning")
+	dbRefresh := fs.Duration("db-refresh", envDuration("DOCKGATE_DB_REFRESH", 6*time.Hour), "how often to look for a newer vulnerability database")
+	twURL := fs.String("tintwire-url", os.Getenv("DOCKGATE_TINTWIRE_URL"), "Tintwire origin for vulnerability alerts; empty disables alerts (token from DOCKGATE_TINTWIRE_TOKEN)")
+	twChannel := fs.String("tintwire-channel", envOr("DOCKGATE_TINTWIRE_CHANNEL", "dockgate"), "Tintwire channel for alerts")
+	alertSev := fs.String("alert-severities", envOr("DOCKGATE_ALERT_SEVERITIES", "CRITICAL,HIGH"), "severities of new fixable findings that alert")
 	logLevel := fs.String("log-level", envOr("DOCKGATE_LOG_LEVEL", "info"), "log level")
 	shutdownTimeout := fs.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown timeout")
 	if err := fs.Parse(args); err != nil {
@@ -144,7 +159,7 @@ func serverRun(args []string) error {
 
 	h, err := hub.New(hub.Config{
 		Store: st, CA: ca, Logger: logger, ReportInterval: *reportInterval,
-		CertDir: *dataDir, Hosts: splitList(*agentHosts),
+		CertDir: *dataDir, Hosts: splitList(*agentHosts), SBOMRequests: *trivyBin != "",
 	})
 	if err != nil {
 		return err
@@ -153,6 +168,21 @@ func serverRun(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go h.RenewLoop(ctx)
+	if *trivyBin != "" {
+		alerter := &vulns.Alerter{Store: st, Logger: logger, Channel: *twChannel, Severities: splitList(strings.ToUpper(*alertSev))}
+		if *twURL != "" {
+			tw, err := tintwire.New(*twURL, os.Getenv("DOCKGATE_TINTWIRE_TOKEN"))
+			if err != nil {
+				return fmt.Errorf("tintwire: %w", err)
+			}
+			alerter.Publisher = tw
+		}
+		scanner := &vulns.Scanner{
+			Store: st, Logger: logger, RefreshEvery: *dbRefresh, AfterPass: alerter.Check,
+			Matcher: &vulns.Trivy{Binary: *trivyBin, CacheDir: filepath.Join(*dataDir, "trivy")},
+		}
+		go scanner.Run(ctx)
+	}
 	if *fgURL != "" {
 		exp := &fleetglass.Exporter{
 			URL: *fgURL, Token: os.Getenv("DOCKGATE_FLEETGLASS_TOKEN"), Store: st, Logger: logger,
@@ -315,6 +345,97 @@ func serverRevoke(args []string) error {
 	return nil
 }
 
+func serverVulns(args []string) error {
+	fs := flag.NewFlagSet("server vulns", flag.ContinueOnError)
+	dataDir := dataDirFlag(fs)
+	host := fs.String("host", "", "only this agent")
+	all := fs.Bool("all", false, "include findings without a fix and low severities")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	st, _, err := openServerState(*dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	findings, err := st.ActiveFindings(context.Background(), *host, time.Now())
+	if err != nil {
+		return err
+	}
+	tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "HOST\tCONTAINER\tSEVERITY\tVULNERABILITY\tPACKAGE\tINSTALLED\tFIXED")
+	for _, f := range findings {
+		if !*all && (!f.Fixable() || (f.Severity != "CRITICAL" && f.Severity != "HIGH")) {
+			continue
+		}
+		fixed := f.Fixed
+		if fixed == "" {
+			fixed = "-"
+		}
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", f.Host, f.Container, f.Severity, f.VulnID, f.Pkg, f.Installed, fixed)
+	}
+	return tw.Flush()
+}
+
+func serverIgnore(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: dockgate server ignore add|list|rm")
+	}
+	fs := flag.NewFlagSet("server ignore "+args[0], flag.ContinueOnError)
+	dataDir := dataDirFlag(fs)
+	vuln := fs.String("vuln", "", "vulnerability ID, e.g. CVE-2026-1234 (add)")
+	pkg := fs.String("package", "", "only this package (add)")
+	repo := fs.String("image", "", "only this image repository, e.g. postgres or ghcr.io/example/app (add)")
+	reason := fs.String("reason", "", "why it is safe to ignore (add, required)")
+	ttl := fs.Duration("ttl", 30*24*time.Hour, "how long the rule lasts (add)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	st, _, err := openServerState(*dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	switch args[0] {
+	case "add":
+		id, err := st.AddIgnore(ctx, store.Ignore{VulnID: *vuln, Pkg: *pkg, Repository: *repo, Reason: *reason, ExpiresAt: time.Now().Add(*ttl)})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Added ignore %d for %s until %s.\n", id, *vuln, time.Now().Add(*ttl).Format(time.DateOnly))
+		return nil
+	case "list":
+		rules, err := st.Ignores(ctx, time.Time{})
+		if err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "ID\tVULNERABILITY\tPACKAGE\tIMAGE\tEXPIRES\tREASON")
+		for _, r := range rules {
+			_, _ = fmt.Fprintf(tw, "%d\t%s\t%s\t%s\t%s\t%s\n", r.ID, r.VulnID, dash(r.Pkg), dash(r.Repository), r.ExpiresAt.Format(time.DateOnly), r.Reason)
+		}
+		return tw.Flush()
+	case "rm":
+		if fs.NArg() != 1 {
+			return errors.New("usage: dockgate server ignore rm ID")
+		}
+		id, err := strconv.ParseInt(fs.Arg(0), 10, 64)
+		if err != nil {
+			return fmt.Errorf("ignore ID: %w", err)
+		}
+		return st.RemoveIgnore(ctx, id)
+	}
+	return fmt.Errorf("unknown ignore command %q", args[0])
+}
+
+func dash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
 func stateDirFlag(fs *flag.FlagSet) *string {
 	return fs.String("state-dir", envOr("DOCKGATE_STATE_DIR", "/var/lib/dockgate-agent"), "agent state directory (key, certificates)")
 }
@@ -347,6 +468,7 @@ func agentRun(args []string) error {
 	stateDir := stateDirFlag(fs)
 	socket := fs.String("docker-socket", envOr("DOCKGATE_DOCKER_SOCKET", "/var/run/docker.sock"), "Docker daemon socket")
 	updateInterval := fs.Duration("update-interval", envDuration("DOCKGATE_UPDATE_INTERVAL", 6*time.Hour), "how often to ask registries about each image tag; 0 disables update checks")
+	scan := fs.Bool("scan", envOr("DOCKGATE_SCAN", "true") == "true", "generate SBOMs the server asks for, with a digest-pinned scanner container")
 	logLevel := fs.String("log-level", envOr("DOCKGATE_LOG_LEVEL", "info"), "log level")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -356,14 +478,19 @@ func agentRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	collector := &agent.Collector{Docker: docker.New(*socket), Version: version}
+	dc := docker.New(*socket)
+	collector := &agent.Collector{Docker: dc, Version: version}
 	if *updateInterval > 0 {
 		collector.Updates = updates.NewChecker(updates.RegistryHead, *updateInterval)
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	logger.Info("agent starting", "agent", id.State.Name, "agent_id", id.State.AgentID, "server", id.State.Server, "version", version)
-	return agent.Run(ctx, id, collector, logger)
+	var sboms *agent.SBOMWorker
+	if *scan {
+		sboms = agent.NewSBOMWorker(&agent.SBOMGenerator{Docker: dc, SocketPath: *socket}, logger)
+	}
+	return agent.Run(ctx, id, collector, sboms, logger)
 }
 
 func splitList(s string) []string {
