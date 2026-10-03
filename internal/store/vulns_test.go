@@ -34,14 +34,14 @@ func TestRequestSBOMsPacing(t *testing.T) {
 	)
 	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
 
-	ids, err := s.RequestSBOMs(ctx, id, 5, now)
+	ids, err := s.RequestSBOMs(ctx, id, 5, AgentQueue{}, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(ids) != 2 {
 		t.Fatalf("first request = %v, want both distinct images", ids)
 	}
-	if ids, _ := s.RequestSBOMs(ctx, id, 5, now.Add(time.Minute)); len(ids) != 0 {
+	if ids, _ := s.RequestSBOMs(ctx, id, 5, AgentQueue{}, now.Add(time.Minute)); len(ids) != 0 {
 		t.Fatalf("in-flight images requested again: %v", ids)
 	}
 	if err := s.SaveSBOM(ctx, id, protocol.SBOMUpload{ImageID: "sha256:aaa", Format: protocol.FormatCycloneDXJSON, Document: []byte(`{"a":1}`)}, now); err != nil {
@@ -50,15 +50,37 @@ func TestRequestSBOMsPacing(t *testing.T) {
 	if err := s.SaveSBOM(ctx, id, protocol.SBOMUpload{ImageID: "sha256:bbb", Error: "scanner exited 1"}, now); err != nil {
 		t.Fatal(err)
 	}
-	if ids, _ := s.RequestSBOMs(ctx, id, 5, now.Add(time.Hour)); len(ids) != 0 {
+	if ids, _ := s.RequestSBOMs(ctx, id, 5, AgentQueue{}, now.Add(time.Hour)); len(ids) != 0 {
 		t.Fatalf("failed image retried too soon: %v", ids)
 	}
-	if ids, _ := s.RequestSBOMs(ctx, id, 5, now.Add(7*time.Hour)); len(ids) != 1 || ids[0] != "sha256:bbb" {
+	if ids, _ := s.RequestSBOMs(ctx, id, 5, AgentQueue{}, now.Add(7*time.Hour)); len(ids) != 1 || ids[0] != "sha256:bbb" {
 		t.Fatalf("failed image not retried after backoff: %v", ids)
 	}
 	doc, err := s.LoadSBOM(ctx, "sha256:aaa")
 	if err != nil || string(doc) != `{"a":1}` {
 		t.Fatalf("LoadSBOM = %q, %v", doc, err)
+	}
+}
+
+func TestRequestSBOMsResendsLostRequests(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	id := enrolledWithContainers(t, s, "alpha",
+		protocol.Container{ID: "c1", Name: "a", Image: "x:1", ImageID: "sha256:aaa"},
+		protocol.Container{ID: "c2", Name: "b", Image: "y:1", ImageID: "sha256:bbb"},
+	)
+	now := time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+	if ids, _ := s.RequestSBOMs(ctx, id, 5, AgentQueue{Reports: true}, now); len(ids) != 2 {
+		t.Fatalf("first request = %v", ids)
+	}
+	// The agent restarted and lost its queue: it now reports only bbb.
+	queue := AgentQueue{Reports: true, Pending: map[string]bool{"sha256:bbb": true}}
+	if ids, _ := s.RequestSBOMs(ctx, id, 5, queue, now.Add(time.Minute)); len(ids) != 0 {
+		t.Fatalf("re-requested within the grace period: %v", ids)
+	}
+	ids, _ := s.RequestSBOMs(ctx, id, 5, queue, now.Add(3*time.Minute))
+	if len(ids) != 1 || ids[0] != "sha256:aaa" {
+		t.Fatalf("lost request not resent: %v, want only aaa (bbb still pending)", ids)
 	}
 }
 

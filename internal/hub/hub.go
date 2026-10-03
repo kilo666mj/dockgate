@@ -252,7 +252,11 @@ func (h *Hub) report(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := protocol.ReportResponse{NextReportSeconds: int(h.reportInterval / time.Second)}
 	if h.sbomRequests {
-		ids, err := h.store.RequestSBOMs(r.Context(), agent.ID, sbomRequestsPerReport, time.Now())
+		queue := store.AgentQueue{Reports: rep.Scanning, Pending: map[string]bool{}}
+		for _, id := range rep.SBOMPending {
+			queue.Pending[id] = true
+		}
+		ids, err := h.store.RequestSBOMs(r.Context(), agent.ID, sbomRequestsPerReport, queue, time.Now())
 		if err != nil {
 			h.logger.Error("pick sbom requests", "agent", agent.Name, "err", err)
 		}

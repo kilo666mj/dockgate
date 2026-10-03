@@ -285,6 +285,9 @@ func Run(ctx context.Context, id *Identity, collector *Collector, sboms *SBOMWor
 		}
 
 		report := collector.Collect(ctx)
+		if sboms != nil {
+			report.Scanning, report.SBOMPending = true, sboms.Pending()
+		}
 		var resp protocol.ReportResponse
 		if err := postJSON(ctx, client, reportURL, report, &resp); err != nil {
 			if ctx.Err() != nil {

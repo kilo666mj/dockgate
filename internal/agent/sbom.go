@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,6 +22,12 @@ const (
 	ScannerRepository = "aquasec/trivy"
 	ScannerDigest     = "sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969" // 0.74.0
 	ScannerVersion    = "trivy 0.74.0"
+)
+
+// Label marking the agent's scanner containers.
+const (
+	LabelRole = "dockgate.role"
+	RoleSBOM  = "sbom"
 )
 
 // Limits for one SBOM run. Large images take minutes because the scanner
@@ -63,11 +70,17 @@ func (g *SBOMGenerator) Generate(ctx context.Context, imageID string) ([]byte, e
 	res, err := g.Docker.Run(ctx, docker.RunSpec{
 		Image: ref,
 		// Packages only: no vulnerability scan here, so no database download
-		// and no network, which the container does not have.
-		Cmd:       []string{"image", "--quiet", "--format", "cyclonedx", "--cache-dir", "/tmp/trivy", imageID},
-		Binds:     []string{g.SocketPath + ":/var/run/docker.sock:ro"},
-		Labels:    map[string]string{"dockgate.role": "sbom"},
-		MaxStdout: maxSBOMBytes,
+		// and no network, which the container does not have. Trivy copies the
+		// exported image into TMPDIR, so that is the disk-backed work volume:
+		// a tmpfs fills on large images and aborts the export mid-stream.
+		Cmd: []string{"image", "--quiet", "--format", "cyclonedx", "--cache-dir", "/work/cache",
+			"--output", "/work/sbom.json", imageID},
+		Env:        []string{"TMPDIR=/work"},
+		Binds:      []string{g.SocketPath + ":/var/run/docker.sock:ro"},
+		Labels:     map[string]string{LabelRole: RoleSBOM},
+		WorkDir:    "/work",
+		OutputFile: "/work/sbom.json",
+		MaxOutput:  maxSBOMBytes,
 	})
 	if err != nil {
 		return nil, err
@@ -75,10 +88,16 @@ func (g *SBOMGenerator) Generate(ctx context.Context, imageID string) ([]byte, e
 	if res.ExitCode != 0 {
 		return nil, fmt.Errorf("scanner exited %d: %s", res.ExitCode, lastLine(res.Stderr))
 	}
-	if !json.Valid(res.Stdout) {
+	if !json.Valid(res.Output) {
 		return nil, fmt.Errorf("scanner output is not JSON: %s", lastLine(res.Stderr))
 	}
-	return res.Stdout, nil
+	return res.Output, nil
+}
+
+// Cleanup removes scanner containers left behind when a previous agent
+// process stopped in the middle of a run.
+func (g *SBOMGenerator) Cleanup(ctx context.Context) (int, error) {
+	return g.Docker.RemoveLabeled(ctx, LabelRole, RoleSBOM)
 }
 
 func lastLine(b []byte) string {
@@ -119,8 +138,26 @@ func (w *SBOMWorker) Enqueue(ids []string) {
 	}
 }
 
+// Pending returns the images queued or in progress, which the agent reports
+// so the server can tell a lost request from a slow one.
+func (w *SBOMWorker) Pending() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	out := make([]string, 0, len(w.pending))
+	for id := range w.pending {
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // Run processes the queue until ctx ends, uploading each result.
 func (w *SBOMWorker) Run(ctx context.Context, client *http.Client, uploadURL string) {
+	if n, err := w.Generator.Cleanup(ctx); err != nil {
+		w.Logger.Warn("remove leftover scanner containers", "err", err)
+	} else if n > 0 {
+		w.Logger.Info("removed leftover scanner containers", "count", n)
+	}
 	for {
 		select {
 		case <-ctx.Done():

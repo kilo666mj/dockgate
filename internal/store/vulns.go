@@ -70,37 +70,57 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `
 
-// SBOM request pacing: an outstanding request is not repeated for
-// sbomInFlight, and a failed image is not retried for sbomRetryAfter.
+// SBOM request pacing. A request the agent does not list as pending is
+// treated as lost after sbomGrace (the agent may not have reported since);
+// for agents that do not report their queue, after sbomInFlight. A failed
+// image is not retried for sbomRetryAfter.
 const (
+	sbomGrace      = 2 * time.Minute
 	sbomInFlight   = 45 * time.Minute
 	sbomRetryAfter = 6 * time.Hour
 )
 
+// AgentQueue is what an agent reported about its SBOM work.
+type AgentQueue struct {
+	Reports bool // the agent reports its queue
+	Pending map[string]bool
+}
+
 // RequestSBOMs picks up to limit images used by the agent's containers that
 // have no SBOM and no outstanding or recently failed request, and records
 // the request.
-func (s *Store) RequestSBOMs(ctx context.Context, agentID string, limit int, now time.Time) ([]string, error) {
+func (s *Store) RequestSBOMs(ctx context.Context, agentID string, limit int, queue AgentQueue, now time.Time) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT DISTINCT c.image_id FROM containers c
+		SELECT DISTINCT c.image_id, r.requested_at, r.failed_at FROM containers c
 		LEFT JOIN sboms b ON b.image_id = c.image_id
 		LEFT JOIN sbom_requests r ON r.image_id = c.image_id
 		WHERE c.agent_id = ? AND c.image_id LIKE 'sha256:%' AND b.image_id IS NULL
-		  AND (r.image_id IS NULL OR (r.failed_at IS NULL AND r.requested_at < ?)
-		       OR (r.failed_at IS NOT NULL AND r.failed_at < ?))
-		ORDER BY c.image_id LIMIT ?`,
-		agentID, now.Add(-sbomInFlight).Unix(), now.Add(-sbomRetryAfter).Unix(), limit)
+		ORDER BY c.image_id`, agentID)
 	if err != nil {
 		return nil, err
 	}
 	var ids []string
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		var requested, failed sql.NullInt64
+		if err := rows.Scan(&id, &requested, &failed); err != nil {
 			_ = rows.Close()
 			return nil, err
 		}
-		ids = append(ids, id)
+		switch {
+		case len(ids) >= limit:
+		case failed.Valid:
+			if now.Sub(time.Unix(failed.Int64, 0)) >= sbomRetryAfter {
+				ids = append(ids, id)
+			}
+		case !requested.Valid:
+			ids = append(ids, id)
+		case queue.Reports && queue.Pending[id]:
+		case queue.Reports && now.Sub(time.Unix(requested.Int64, 0)) >= sbomGrace:
+			ids = append(ids, id)
+		case !queue.Reports && now.Sub(time.Unix(requested.Int64, 0)) >= sbomInFlight:
+			ids = append(ids, id)
+		}
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		return nil, err

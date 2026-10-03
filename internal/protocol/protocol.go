@@ -58,6 +58,11 @@ type Report struct {
 	Images       []Image     `json:"images"`
 	// Errors lists collection problems that did not stop the report.
 	Errors []string `json:"errors,omitempty"`
+	// Scanning is true when the agent generates SBOMs; SBOMPending then lists
+	// the image IDs it has queued or is inventorying, so the server can tell
+	// a lost request from a slow one.
+	Scanning    bool     `json:"scanning,omitempty"`
+	SBOMPending []string `json:"sbom_pending,omitempty"`
 }
 
 // DockerInfo describes the Docker engine on the host.

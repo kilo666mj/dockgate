@@ -1,6 +1,8 @@
 package hub_test
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/binary"
@@ -102,11 +104,20 @@ func fakeDocker(t *testing.T) *docker.Client {
 			return
 		case r.Method == http.MethodPost && r.URL.Path == "/containers/create":
 			var spec struct {
-				HostConfig struct{ NetworkMode string }
+				Volumes    map[string]any
+				HostConfig struct {
+					NetworkMode    string
+					ReadonlyRootfs bool
+					CapDrop        []string
+				}
 			}
 			_ = json.NewDecoder(r.Body).Decode(&spec)
-			if spec.HostConfig.NetworkMode != "none" {
-				http.Error(w, `{"message":"scanner must have no network"}`, http.StatusBadRequest)
+			if spec.HostConfig.NetworkMode != "none" || !spec.HostConfig.ReadonlyRootfs || len(spec.HostConfig.CapDrop) == 0 {
+				http.Error(w, `{"message":"scanner must be locked down"}`, http.StatusBadRequest)
+				return
+			}
+			if _, ok := spec.Volumes["/work"]; !ok {
+				http.Error(w, `{"message":"scanner needs the disk-backed work volume"}`, http.StatusBadRequest)
 				return
 			}
 			_, _ = io.WriteString(w, `{"Id":"scan1"}`)
@@ -118,8 +129,13 @@ func fakeDocker(t *testing.T) *docker.Client {
 			_, _ = io.WriteString(w, `{"StatusCode":0}`)
 			return
 		case r.Method == http.MethodGet && r.URL.Path == "/containers/scan1/logs":
-			_, _ = w.Write(frame(1, `{"bomFormat":"CycloneDX","components":[]}`))
 			_, _ = w.Write(frame(2, "done"))
+			return
+		case r.Method == http.MethodGet && r.URL.Path == "/containers/scan1/archive" && r.URL.Query().Get("path") == "/work/sbom.json":
+			_, _ = w.Write(tarFile("sbom.json", `{"bomFormat":"CycloneDX","components":[]}`))
+			return
+		case r.Method == http.MethodGet && r.URL.Path == "/containers/json" && r.URL.Query().Get("filters") != "":
+			_, _ = io.WriteString(w, `[]`) // no leftover scanner containers
 			return
 		case r.Method == http.MethodDelete && r.URL.Path == "/containers/scan1":
 			w.WriteHeader(http.StatusNoContent)
@@ -141,6 +157,16 @@ const (
 	digestCurrent = "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
 	digestNew     = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
+
+// tarFile returns a tar stream holding one file, as the archive API does.
+func tarFile(name, content string) []byte {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	_ = tw.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(content)), Typeflag: tar.TypeReg})
+	_, _ = tw.Write([]byte(content))
+	_ = tw.Close()
+	return buf.Bytes()
+}
 
 // frame encodes one Docker log stream frame.
 func frame(stream byte, payload string) []byte {

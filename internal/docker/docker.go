@@ -5,6 +5,7 @@
 package docker
 
 import (
+	"archive/tar"
 	"bufio"
 	"bytes"
 	"context"
@@ -266,32 +267,46 @@ func (c *Client) PullImage(ctx context.Context, repository, digest string) error
 type RunSpec struct {
 	Image  string
 	Cmd    []string
+	Env    []string
 	Binds  []string
 	Labels map[string]string
-	// MaxStdout caps captured standard output; the run fails beyond it.
-	MaxStdout int64
+	// WorkDir gets an anonymous, disk-backed volume that is deleted with the
+	// container: scratch space too large for tmpfs, and the output location.
+	WorkDir string
+	// OutputFile is a file the container writes, copied out after it exits.
+	// Reading a file avoids logging drivers (journald) that split long lines.
+	OutputFile string
+	// MaxOutput caps the output file; the run fails beyond it.
+	MaxOutput int64
 }
 
 // RunResult is a finished one-shot container.
 type RunResult struct {
 	ExitCode int
-	Stdout   []byte
+	Output   []byte
 	Stderr   []byte
 }
 
 // Run creates, starts and waits for a locked-down container with no network,
-// a read-only root filesystem, a tmpfs /tmp and no capabilities, then returns
-// its output. The container is always removed.
+// a read-only root filesystem, a small tmpfs /tmp and no capabilities, then
+// returns its output file and standard error. The container and its
+// anonymous volume are always removed.
 func (c *Client) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
+	volumes := map[string]any{}
+	if spec.WorkDir != "" {
+		volumes[spec.WorkDir] = map[string]any{}
+	}
 	create := map[string]any{
-		"Image":  spec.Image,
-		"Cmd":    spec.Cmd,
-		"Labels": spec.Labels,
+		"Image":   spec.Image,
+		"Cmd":     spec.Cmd,
+		"Env":     spec.Env,
+		"Labels":  spec.Labels,
+		"Volumes": volumes,
 		"HostConfig": map[string]any{
 			"Binds":          spec.Binds,
 			"NetworkMode":    "none",
 			"ReadonlyRootfs": true,
-			"Tmpfs":          map[string]string{"/tmp": "rw,size=512m"},
+			"Tmpfs":          map[string]string{"/tmp": "rw,size=64m"},
 			"CapDrop":        []string{"ALL"},
 			"SecurityOpt":    []string{"no-new-privileges"},
 		},
@@ -305,9 +320,7 @@ func (c *Client) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	defer func() {
 		rmCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), requestTimeout)
 		defer cancel()
-		if resp, err := c.do(rmCtx, http.MethodDelete, "/containers/"+created.ID, url.Values{"force": {"true"}}, nil); err == nil {
-			_ = resp.Body.Close()
-		}
+		_ = c.Remove(rmCtx, created.ID)
 	}()
 	if err := c.post(ctx, "/containers/"+created.ID+"/start", nil, nil, nil); err != nil {
 		return RunResult{}, err
@@ -324,18 +337,80 @@ func (c *Client) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	if waited.Error != nil && waited.Error.Message != "" {
 		return RunResult{}, fmt.Errorf("wait: %s", waited.Error.Message)
 	}
+	res := RunResult{ExitCode: waited.StatusCode}
 	logCtx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	resp, err := c.do(logCtx, http.MethodGet, "/containers/"+created.ID+"/logs", url.Values{"stdout": {"true"}, "stderr": {"true"}}, nil)
+	resp, err := c.do(logCtx, http.MethodGet, "/containers/"+created.ID+"/logs", url.Values{"stderr": {"true"}}, nil)
 	if err != nil {
 		return RunResult{}, err
+	}
+	_, res.Stderr, err = demux(resp.Body, 0)
+	_ = resp.Body.Close()
+	if err != nil {
+		return RunResult{}, err
+	}
+	if spec.OutputFile != "" && res.ExitCode == 0 {
+		if res.Output, err = c.copyFile(logCtx, created.ID, spec.OutputFile, spec.MaxOutput); err != nil {
+			return RunResult{}, err
+		}
+	}
+	return res, nil
+}
+
+// Remove force-removes a container and its anonymous volumes.
+func (c *Client) Remove(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/containers/"+url.PathEscape(id), url.Values{"force": {"true"}, "v": {"true"}}, nil)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// RemoveLabeled removes every container, running or not, with label=value,
+// and returns how many it removed.
+func (c *Client) RemoveLabeled(ctx context.Context, label, value string) (int, error) {
+	filters, err := json.Marshal(map[string][]string{"label": {label + "=" + value}})
+	if err != nil {
+		return 0, err
+	}
+	var list []struct {
+		ID string `json:"Id"`
+	}
+	if err := c.get(ctx, "/containers/json", url.Values{"all": {"true"}, "filters": {string(filters)}}, &list); err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, ctr := range list {
+		if err := c.Remove(ctx, ctr.ID); err != nil {
+			return n, err
+		}
+		n++
+	}
+	return n, nil
+}
+
+// copyFile reads one regular file out of a (stopped) container through the
+// archive API, which returns it as a tar stream.
+func (c *Client) copyFile(ctx context.Context, id, path string, limit int64) ([]byte, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/containers/"+id+"/archive", url.Values{"path": {path}}, nil)
+	if err != nil {
+		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	stdout, stderr, err := demux(resp.Body, spec.MaxStdout)
-	if err != nil {
-		return RunResult{}, err
+	tr := tar.NewReader(resp.Body)
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			return nil, fmt.Errorf("read %s from container: %w", path, err)
+		}
+		if hdr.Typeflag != tar.TypeReg {
+			continue
+		}
+		if limit > 0 && hdr.Size > limit {
+			return nil, fmt.Errorf("%s is %d bytes, over the %d byte limit", path, hdr.Size, limit)
+		}
+		return io.ReadAll(tr)
 	}
-	return RunResult{ExitCode: waited.StatusCode, Stdout: stdout, Stderr: stderr}, nil
 }
 
 func (c *Client) post(ctx context.Context, path string, query url.Values, body, out any) error {
