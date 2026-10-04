@@ -217,7 +217,7 @@ func TestEnrollReportAndRenew(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
 	go func() {
-		done <- agent.Run(runCtx, id, collector, sboms, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		done <- agent.Run(runCtx, id, collector, sboms, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	}()
 	waitFor(t, func() bool {
 		agents, err := e.store.Agents(ctx)
@@ -354,5 +354,71 @@ func TestUnsolicitedSBOMRejected(t *testing.T) {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("unsolicited upload status = %d, want 409", resp.StatusCode)
+	}
+}
+
+func TestJobDispatchAndResult(t *testing.T) {
+	e := startHub(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	if _, err := agent.Enroll(ctx, e.url, e.token(t, "echo", false), "echo", dir, false); err != nil {
+		t.Fatal(err)
+	}
+	id, err := agent.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	job := store.Job{ID: "job_1", Kind: protocol.JobUpdate, AgentID: id.State.AgentID, Host: "echo", ContainerID: "c1",
+		ContainerName: "web", Reference: "example/web:latest", Digest: "sha256:abc", State: store.JobPendingApproval, RequestedBy: "test"}
+	if err := e.store.CreateJob(ctx, job, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.store.DecideJob(ctx, job.ID, true, "oidc:me", "", now); err != nil {
+		t.Fatal(err)
+	}
+	client := id.HTTPClient()
+	post := func(path, body string) (*http.Response, []byte) {
+		t.Helper()
+		resp, err := client.Post(e.url+path, "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		b, _ := io.ReadAll(resp.Body)
+		return resp, b
+	}
+	report := func(jobs bool) protocol.ReportResponse {
+		t.Helper()
+		b, _ := json.Marshal(protocol.Report{Hostname: "echo", Jobs: jobs})
+		resp, body := post(protocol.PathReport, string(b))
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("report status %d: %s", resp.StatusCode, body)
+		}
+		var rr protocol.ReportResponse
+		if err := json.Unmarshal(body, &rr); err != nil {
+			t.Fatal(err)
+		}
+		return rr
+	}
+	if rr := report(false); len(rr.Jobs) != 0 {
+		t.Fatal("job sent to an agent that does not run jobs")
+	}
+	rr := report(true)
+	if len(rr.Jobs) != 1 || rr.Jobs[0].ID != "job_1" || rr.Jobs[0].Digest != "sha256:abc" {
+		t.Fatalf("jobs = %+v", rr.Jobs)
+	}
+	if rr := report(true); len(rr.Jobs) != 0 {
+		t.Fatal("job sent twice")
+	}
+	result := `{"id":"job_1","state":"succeeded","steps":["done"]}`
+	if resp, body := post(protocol.PathJobResult, result); resp.StatusCode != http.StatusOK {
+		t.Fatalf("result status %d: %s", resp.StatusCode, body)
+	}
+	if resp, _ := post(protocol.PathJobResult, result); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("repeated result status = %d, want 409", resp.StatusCode)
+	}
+	if got, _ := e.store.Job(ctx, "job_1"); got.State != store.JobSucceeded {
+		t.Fatalf("job state = %s", got.State)
 	}
 }

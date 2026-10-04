@@ -262,9 +262,9 @@ func (id *Identity) Renew(ctx context.Context, client *http.Client) error {
 	return id.reload()
 }
 
-// Run reports to the server until ctx ends. sboms may be nil to disable
-// SBOM generation.
-func Run(ctx context.Context, id *Identity, collector *Collector, sboms *SBOMWorker, logger *slog.Logger) error {
+// Run reports to the server until ctx ends. sboms and jobs may be nil to
+// disable SBOM generation and job execution.
+func Run(ctx context.Context, id *Identity, collector *Collector, sboms *SBOMWorker, jobs *JobWorker, logger *slog.Logger) error {
 	client := id.HTTPClient()
 	base, err := serverURL(id.State.Server)
 	if err != nil {
@@ -273,6 +273,9 @@ func Run(ctx context.Context, id *Identity, collector *Collector, sboms *SBOMWor
 	reportURL := base.JoinPath(protocol.PathReport).String()
 	if sboms != nil {
 		go sboms.Run(ctx, client, base.JoinPath(protocol.PathSBOM).String())
+	}
+	if jobs != nil {
+		go jobs.Run(ctx, client, base.JoinPath(protocol.PathJobResult).String())
 	}
 	interval := time.Minute
 	for {
@@ -288,6 +291,9 @@ func Run(ctx context.Context, id *Identity, collector *Collector, sboms *SBOMWor
 		if sboms != nil {
 			report.Scanning, report.SBOMPending = true, sboms.Pending()
 		}
+		if jobs != nil {
+			report.Jobs, report.JobsRunning = true, jobs.Held()
+		}
 		var resp protocol.ReportResponse
 		if err := postJSON(ctx, client, reportURL, report, &resp); err != nil {
 			if ctx.Err() != nil {
@@ -301,6 +307,9 @@ func Run(ctx context.Context, id *Identity, collector *Collector, sboms *SBOMWor
 			}
 			if sboms != nil && len(resp.SBOMRequests) > 0 {
 				sboms.Enqueue(resp.SBOMRequests)
+			}
+			if jobs != nil && len(resp.Jobs) > 0 {
+				jobs.Enqueue(resp.Jobs)
 			}
 		}
 
@@ -330,7 +339,22 @@ func postJSON(ctx context.Context, client *http.Client, url string, in, out any)
 	if resp.StatusCode != http.StatusOK {
 		var e protocol.Error
 		_ = json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&e)
-		return fmt.Errorf("%s: %s", resp.Status, e.Error)
+		return &statusError{code: resp.StatusCode, msg: fmt.Sprintf("%s: %s", resp.Status, e.Error)}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// statusError is a non-200 response from the server.
+type statusError struct {
+	code int
+	msg  string
+}
+
+func (e *statusError) Error() string { return e.msg }
+
+// rejected reports whether the server refused a request for good (4xx),
+// as opposed to a network or server failure worth retrying.
+func rejected(err error) bool {
+	var se *statusError
+	return errors.As(err, &se) && se.code >= 400 && se.code < 500
 }

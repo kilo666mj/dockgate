@@ -172,6 +172,58 @@ container):
 Comparing against the running image matters: an update that fixes ten CVEs
 and adds none should pass even if the image still has old findings.
 
+### Update jobs (phase 3)
+
+Updates run as jobs that an agent requests, a person approves, and the host
+agent executes. Agents never approve.
+
+1. **Request.** An assistant calls the MCP tool `dockgate_update_request`
+   (host, container, reason, optional Taskboard task ID), or an operator
+   runs `dockgate server jobs request`. The server evaluates the update gate
+   at once:
+   - **denied** when the container is unknown or has no available update,
+     the candidate digest is not the one the server scanned, the scan is not
+     finished, the image matches an own-image prefix (those are fixed by a
+     pull request instead), or the container already has an open job;
+   - otherwise **pending approval**, with the gate result shown on the job:
+     fixes, findings introduced at critical/high, and what remains. A
+     candidate that introduces findings is held with a warning, not hidden.
+2. **Approve.** A Tintwire card links to the job page in the dockgate web UI,
+   which requires an OIDC sign-in (Pocket ID) and checks the signed-in user
+   against an allow list. Approve and reject are POST forms with a
+   per-session CSRF token. `dockgate server jobs approve|reject` on the
+   server host is the fallback. Approval re-checks that the candidate digest
+   is still current; a newer image supersedes the job. Pending jobs expire
+   after 24 hours, approved jobs that no agent picks up after 1 hour.
+3. **Dispatch.** The next report from the host's agent receives the job
+   (exactly once). A dispatched job without a result after 30 minutes is
+   marked lost; it is not retried automatically.
+4. **Execute.** The agent recreates the container through the Engine API,
+   for Compose containers too, so it needs no compose files:
+   - refuse when the container changed (different ID or image reference),
+     carries a dockgate label, or another container shares its network
+     namespace (`network_mode: container:`);
+   - pull `repository@digest` (the approved, scanned digest; registry
+     credentials from the agent's Docker config) and tag it with the
+     container's reference, so the tag cannot have moved since the scan;
+   - rename the old container, stop it, and create the new one with the old
+     name, configuration, labels, networks (with aliases), and named and
+     anonymous volumes. Settings inherited from the old image (environment,
+     labels, command, entrypoint, health check, exposed ports, volumes) are
+     dropped so the new image's defaults apply, as `docker compose` does;
+   - start it and wait for healthy (with a health check, up to 3 minutes) or
+     running without restarts for 15 seconds;
+   - on success remove the old container but not its volumes; on failure
+     remove the new one, restore the old one's name and state, and report
+     **rolled back** with the new container's last log lines.
+5. **Audit.** Every transition is stored with its actor (MCP client, OIDC
+   user, CLI, agent) and time; the job page and `dockgate_job_status` show
+   the history and the agent's step log.
+
+Container settings that cannot be carried over through the Engine API (for
+example a legacy `--link` to a container that no longer exists) fail the
+job before anything is stopped.
+
 ### 2. Policy gate
 
 Rules evaluated against every running container, for example:
@@ -250,8 +302,9 @@ apply to enrollment, so it is not used.
    identical findings for SBOM matching and direct scans (30/30 and 220/220).
    Trivy is pinned to 0.74.0: image by digest on agents, binary by checksum
    on the server.*
-3. **UI and updates.** OIDC sign-in, fleet and host views, job queue,
-   update gate, audit log.
+3. **UI and updates.** OIDC sign-in, job queue with approval, update gate,
+   audit log (see [Update jobs](#update-jobs-phase-3)). Fleet and host views
+   follow.
 4. **Policy (audit).** Rules, exception labels, violation reporting.
 5. **Migration.** Move every host over, then retire the old tool and its
    notification relay.

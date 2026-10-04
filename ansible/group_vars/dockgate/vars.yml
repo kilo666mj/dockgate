@@ -57,3 +57,16 @@ dockgate_taskboard_max_open: 5
 dockgate_taskboard_requirements: "runner:local"
 # Image reference prefixes built from your own repositories.
 dockgate_own_image_prefixes: []
+
+# Web UI for approving update jobs, on loopback behind an HTTPS proxy.
+# Empty disables it. It requires OIDC sign-in: register a client with
+# redirect URL <dockgate_web_url>/auth/callback and put
+# dockgate_oidc_client_secret in group_vars/dockgate/secret.yml (Vault).
+# Allow at least one email or group.
+dockgate_web_listen: ""
+dockgate_web_url: ""
+dockgate_oidc_issuer: ""
+dockgate_oidc_client_id: ""
+dockgate_oidc_client_secret: ""
+dockgate_oidc_allowed_emails: []
+dockgate_oidc_allowed_groups: []

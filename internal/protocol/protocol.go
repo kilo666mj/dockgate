@@ -63,6 +63,10 @@ type Report struct {
 	// a lost request from a slow one.
 	Scanning    bool     `json:"scanning,omitempty"`
 	SBOMPending []string `json:"sbom_pending,omitempty"`
+	// Jobs is true when the agent executes jobs; JobsRunning then lists the
+	// jobs it holds (queued, running, or with an unsent result).
+	Jobs        bool     `json:"jobs,omitempty"`
+	JobsRunning []string `json:"jobs_running,omitempty"`
 }
 
 // DockerInfo describes the Docker engine on the host.
@@ -129,6 +133,8 @@ type ReportResponse struct {
 	// SBOMRequests are local image IDs (sha256:...) to inventory. The agent
 	// decides how; the server never sends a command.
 	SBOMRequests []string `json:"sbom_requests,omitempty"`
+	// Jobs are approved jobs for this agent, each sent once.
+	Jobs []Job `json:"jobs,omitempty"`
 }
 
 // FormatCycloneDXJSON is the only SBOM format agents send.

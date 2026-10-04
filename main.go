@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,6 +27,7 @@ import (
 	"go.michaelspost.com/dockgate/internal/docker"
 	"go.michaelspost.com/dockgate/internal/fleetglass"
 	"go.michaelspost.com/dockgate/internal/hub"
+	"go.michaelspost.com/dockgate/internal/jobs"
 	"go.michaelspost.com/dockgate/internal/mcpapi"
 	"go.michaelspost.com/dockgate/internal/pki"
 	"go.michaelspost.com/dockgate/internal/protocol"
@@ -33,6 +36,7 @@ import (
 	"go.michaelspost.com/dockgate/internal/tasks"
 	"go.michaelspost.com/dockgate/internal/updates"
 	"go.michaelspost.com/dockgate/internal/vulns"
+	"go.michaelspost.com/dockgate/internal/web"
 
 	tintwire "go.michaelspost.com/tintwire-go"
 )
@@ -50,6 +54,7 @@ Server commands (run on the central server):
   server revoke NAME       stop an agent from authenticating
   server vulns             list fixable vulnerabilities on running containers
   server ignore add|list|rm  manage vulnerability ignore rules
+  server jobs list|show|request|approve|reject  manage update jobs
 
 Agent commands (run on each Docker host):
   agent enroll -server URL -token TOKEN   enroll with the server once
@@ -96,6 +101,8 @@ func run(args []string) error {
 		return serverVulns(rest)
 	case "server ignore":
 		return serverIgnore(rest)
+	case "server jobs":
+		return serverJobs(rest)
 	case "agent enroll":
 		return agentEnroll(rest)
 	case "agent run":
@@ -153,6 +160,12 @@ func serverRun(args []string) error {
 	ownPrefixes := fs.String("own-image-prefixes", os.Getenv("DOCKGATE_OWN_IMAGE_PREFIXES"), "comma-separated image reference prefixes built from your own repositories (fixed by pull request instead of pull and recreate)")
 	mcpListen := fs.String("mcp-listen", os.Getenv("DOCKGATE_MCP_LISTEN"), "MCP (Streamable HTTP) listen address for agents via a TLS proxy, e.g. 127.0.0.1:8098; empty disables it")
 	mcpTokenFile := fs.String("mcp-token-file", os.Getenv("DOCKGATE_MCP_TOKEN_FILE"), "file holding the MCP bearer token (required with -mcp-listen)")
+	webListen := fs.String("web-listen", os.Getenv("DOCKGATE_WEB_LISTEN"), "web UI listen address behind a TLS proxy, e.g. 127.0.0.1:8099; empty disables it")
+	webURL := fs.String("web-url", os.Getenv("DOCKGATE_WEB_URL"), "public https origin of the web UI, used for sign-in and in approval links")
+	oidcIssuer := fs.String("oidc-issuer", os.Getenv("DOCKGATE_OIDC_ISSUER"), "OIDC issuer for web sign-in (client secret from DOCKGATE_OIDC_CLIENT_SECRET)")
+	oidcClient := fs.String("oidc-client-id", os.Getenv("DOCKGATE_OIDC_CLIENT_ID"), "OIDC client ID for web sign-in")
+	oidcEmails := fs.String("oidc-allowed-emails", os.Getenv("DOCKGATE_OIDC_ALLOWED_EMAILS"), "comma-separated emails allowed to sign in and approve jobs")
+	oidcGroups := fs.String("oidc-allowed-groups", os.Getenv("DOCKGATE_OIDC_ALLOWED_GROUPS"), "comma-separated groups allowed to sign in and approve jobs")
 	logLevel := fs.String("log-level", envOr("DOCKGATE_LOG_LEVEL", "info"), "log level")
 	shutdownTimeout := fs.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown timeout")
 	if err := fs.Parse(args); err != nil {
@@ -166,24 +179,48 @@ func serverRun(args []string) error {
 	}
 	defer func() { _ = st.Close() }()
 
+	var tw *tintwire.Client
+	if *twURL != "" {
+		if tw, err = tintwire.New(*twURL, os.Getenv("DOCKGATE_TINTWIRE_TOKEN")); err != nil {
+			return fmt.Errorf("tintwire: %w", err)
+		}
+	}
+	jobSvc := &jobs.Service{Store: st, Logger: logger, Channel: *twChannel, BaseURL: *webURL, OwnImagePrefixes: splitList(*ownPrefixes)}
+	if tw != nil {
+		jobSvc.Publisher = tw
+	}
+
 	h, err := hub.New(hub.Config{
 		Store: st, CA: ca, Logger: logger, ReportInterval: *reportInterval,
 		CertDir: *dataDir, Hosts: splitList(*agentHosts), SBOMRequests: *trivyBin != "",
+		JobFinished: jobSvc.Finished,
 	})
 	if err != nil {
 		return err
 	}
 
+	var webSrv *http.Server
+	if *webListen != "" {
+		ui, err := web.New(web.Config{
+			Store: st, Jobs: jobSvc, Logger: logger, BaseURL: *webURL, Version: version,
+			OIDC: web.OIDC{
+				Issuer: *oidcIssuer, ClientID: *oidcClient, ClientSecret: os.Getenv("DOCKGATE_OIDC_CLIENT_SECRET"),
+				AllowedEmails: splitList(*oidcEmails), AllowedGroups: splitList(*oidcGroups),
+			},
+		})
+		if err != nil {
+			return err
+		}
+		webSrv = newHTTPServer(*webListen, ui.Handler())
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	go h.RenewLoop(ctx)
+	go jobSvc.ExpireLoop(ctx, time.Minute)
 	if *trivyBin != "" {
 		alerter := &vulns.Alerter{Store: st, Logger: logger, Channel: *twChannel, Severities: splitList(strings.ToUpper(*alertSev))}
-		if *twURL != "" {
-			tw, err := tintwire.New(*twURL, os.Getenv("DOCKGATE_TINTWIRE_TOKEN"))
-			if err != nil {
-				return fmt.Errorf("tintwire: %w", err)
-			}
+		if tw != nil {
 			alerter.Publisher = tw
 		}
 		scanner := &vulns.Scanner{
@@ -223,7 +260,7 @@ func serverRun(args []string) error {
 		if err != nil {
 			return fmt.Errorf("MCP token: %w", err)
 		}
-		handler, err := mcpapi.Handler(mcpapi.NewServer(st, version, logger), strings.TrimSpace(string(token)), logger)
+		handler, err := mcpapi.Handler(mcpapi.NewServer(st, jobSvc, version, logger), strings.TrimSpace(string(token)), logger)
 		if err != nil {
 			return err
 		}
@@ -232,7 +269,7 @@ func serverRun(args []string) error {
 		mcpSrv = newHTTPServer(*mcpListen, mux)
 	}
 
-	errc := make(chan error, 3)
+	errc := make(chan error, 4)
 	go func() {
 		logger.Info("listening", "addr", *listen, "version", version)
 		errc <- health.ListenAndServe()
@@ -245,6 +282,12 @@ func serverRun(args []string) error {
 		go func() {
 			logger.Info("MCP listening", "addr", *mcpListen)
 			errc <- mcpSrv.ListenAndServe()
+		}()
+	}
+	if webSrv != nil {
+		go func() {
+			logger.Info("web UI listening", "addr", *webListen, "url", *webURL)
+			errc <- webSrv.ListenAndServe()
 		}()
 	}
 
@@ -262,6 +305,9 @@ func serverRun(args []string) error {
 	err = errors.Join(health.Shutdown(shutdownCtx), agents.Shutdown(shutdownCtx))
 	if mcpSrv != nil {
 		err = errors.Join(err, mcpSrv.Shutdown(shutdownCtx))
+	}
+	if webSrv != nil {
+		err = errors.Join(err, webSrv.Shutdown(shutdownCtx))
 	}
 	return err
 }
@@ -476,6 +522,92 @@ func serverIgnore(args []string) error {
 	return fmt.Errorf("unknown ignore command %q", args[0])
 }
 
+func serverJobs(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: dockgate server jobs list|show|request|approve|reject")
+	}
+	fs := flag.NewFlagSet("server jobs "+args[0], flag.ContinueOnError)
+	dataDir := dataDirFlag(fs)
+	host := fs.String("host", "", "host name (request)")
+	container := fs.String("container", "", "container name (request)")
+	reason := fs.String("reason", "", "why (request, required)")
+	note := fs.String("note", "", "note recorded with the decision (approve, reject)")
+	all := fs.Bool("all", false, "include finished jobs (list)")
+	ownPrefixes := fs.String("own-image-prefixes", os.Getenv("DOCKGATE_OWN_IMAGE_PREFIXES"), "image prefixes fixed by pull request instead (request)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return err
+	}
+	st, _, err := openServerState(*dataDir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = st.Close() }()
+	ctx := context.Background()
+	svc := &jobs.Service{Store: st, Logger: newLogger("warn"), OwnImagePrefixes: splitList(*ownPrefixes)}
+	actor := "cli"
+	if u, err := user.Current(); err == nil {
+		actor += ":" + u.Username
+	}
+	if hn, err := os.Hostname(); err == nil {
+		actor += "@" + hn
+	}
+	oneID := func() (string, error) {
+		if fs.NArg() != 1 {
+			return "", fmt.Errorf("usage: dockgate server jobs %s JOB_ID", args[0])
+		}
+		return fs.Arg(0), nil
+	}
+	switch args[0] {
+	case "list":
+		f := store.JobFilter{States: store.OpenJobStates, Limit: 100}
+		if *all {
+			f.States = nil
+		}
+		list, err := st.Jobs(ctx, f)
+		if err != nil {
+			return err
+		}
+		tw := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
+		_, _ = fmt.Fprintln(tw, "JOB\tSTATE\tHOST\tCONTAINER\tFIXES\tINTRODUCES\tREQUESTED\tBY")
+		for _, j := range list {
+			_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n", j.ID, j.State, j.Host, j.ContainerName,
+				len(j.Gate.Fixes), len(j.Gate.Introduces), j.CreatedAt.Format("2006-01-02 15:04"), j.RequestedBy)
+		}
+		return tw.Flush()
+	case "show":
+		id, err := oneID()
+		if err != nil {
+			return err
+		}
+		j, err := st.Job(ctx, id)
+		if err != nil {
+			return err
+		}
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(j)
+	case "request":
+		j, err := svc.RequestUpdate(ctx, jobs.Request{Host: *host, Container: *container, Reason: *reason, Actor: actor})
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Job %s is %s: fixes %d, introduces %d.\n", j.ID, j.State, len(j.Gate.Fixes), len(j.Gate.Introduces))
+		return nil
+	case "approve", "reject":
+		id, err := oneID()
+		if err != nil {
+			return err
+		}
+		j, err := svc.Decide(ctx, id, args[0] == "approve", actor, *note)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(os.Stderr, "Job %s is %s.\n", j.ID, j.State)
+		return nil
+	}
+	return fmt.Errorf("unknown jobs command %q", args[0])
+}
+
 func dash(s string) string {
 	if s == "" {
 		return "-"
@@ -516,6 +648,7 @@ func agentRun(args []string) error {
 	socket := fs.String("docker-socket", envOr("DOCKGATE_DOCKER_SOCKET", "/var/run/docker.sock"), "Docker daemon socket")
 	updateInterval := fs.Duration("update-interval", envDuration("DOCKGATE_UPDATE_INTERVAL", 6*time.Hour), "how often to ask registries about each image tag; 0 disables update checks")
 	scan := fs.Bool("scan", envOr("DOCKGATE_SCAN", "true") == "true", "generate SBOMs the server asks for, with a digest-pinned scanner container")
+	jobsOn := fs.Bool("jobs", envOr("DOCKGATE_JOBS", "true") == "true", "carry out update jobs the server has approved")
 	logLevel := fs.String("log-level", envOr("DOCKGATE_LOG_LEVEL", "info"), "log level")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -537,7 +670,11 @@ func agentRun(args []string) error {
 	if *scan {
 		sboms = agent.NewSBOMWorker(&agent.SBOMGenerator{Docker: dc, SocketPath: *socket}, logger)
 	}
-	return agent.Run(ctx, id, collector, sboms, logger)
+	var jobs *agent.JobWorker
+	if *jobsOn {
+		jobs = agent.NewJobWorker(agent.NewExecutor(dc), logger)
+	}
+	return agent.Run(ctx, id, collector, sboms, jobs, logger)
 }
 
 func splitList(s string) []string {

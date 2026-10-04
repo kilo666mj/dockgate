@@ -26,6 +26,7 @@ const (
 	maxEnrollBody = 64 << 10
 	maxReportBody = 16 << 20
 	maxSBOMBody   = 64 << 20
+	maxJobBody    = 1 << 20
 	// sbomRequestsPerReport bounds how many images one report asks for; the
 	// agent works through them one at a time.
 	sbomRequestsPerReport = 2
@@ -40,6 +41,7 @@ type Hub struct {
 	certDir        string
 	hosts          []string
 	sbomRequests   bool
+	jobFinished    func(context.Context, store.Job)
 
 	mu   sync.Mutex
 	cert tls.Certificate
@@ -58,6 +60,8 @@ type Config struct {
 	Hosts []string
 	// SBOMRequests asks agents for SBOMs of images without one.
 	SBOMRequests bool
+	// JobFinished, if set, is called after an agent reports a job result.
+	JobFinished func(context.Context, store.Job)
 }
 
 // New returns a Hub and issues its server certificate.
@@ -67,7 +71,7 @@ func New(cfg Config) (*Hub, error) {
 	}
 	h := &Hub{
 		store: cfg.Store, ca: cfg.CA, logger: cfg.Logger, reportInterval: cfg.ReportInterval,
-		certDir: cfg.CertDir, hosts: cfg.Hosts, sbomRequests: cfg.SBOMRequests,
+		certDir: cfg.CertDir, hosts: cfg.Hosts, sbomRequests: cfg.SBOMRequests, jobFinished: cfg.JobFinished,
 	}
 	if err := h.refreshCertificate(); err != nil {
 		return nil, err
@@ -128,6 +132,7 @@ func (h *Hub) Handler() http.Handler {
 	mux.HandleFunc("POST "+protocol.PathRenew, h.requireAgent(h.renew))
 	mux.HandleFunc("POST "+protocol.PathReport, h.requireAgent(h.report))
 	mux.HandleFunc("POST "+protocol.PathSBOM, h.requireAgent(h.sbom))
+	mux.HandleFunc("POST "+protocol.PathJobResult, h.requireAgent(h.jobResult))
 	return mux
 }
 
@@ -262,6 +267,18 @@ func (h *Hub) report(w http.ResponseWriter, r *http.Request) {
 		}
 		resp.SBOMRequests = ids
 	}
+	// Only agents that say they run jobs get them, so an old agent never
+	// silently drops an approved job.
+	if rep.Jobs {
+		jobs, err := h.store.DispatchJobs(r.Context(), agent.ID, rep.JobsRunning, time.Now())
+		if err != nil {
+			h.logger.Error("dispatch jobs", "agent", agent.Name, "err", err)
+		}
+		for _, j := range jobs {
+			h.logger.Info("job dispatched", "agent", agent.Name, "job_id", j.ID, "container", j.ContainerName, "digest", j.Digest)
+		}
+		resp.Jobs = jobs
+	}
 	h.logger.Debug("report", "agent", agent.Name, "containers", len(rep.Containers), "images", len(rep.Images), "sbom_requests", len(resp.SBOMRequests))
 	h.writeJSON(w, http.StatusOK, resp)
 }
@@ -293,6 +310,32 @@ func (h *Hub) sbom(w http.ResponseWriter, r *http.Request) {
 		h.logger.Warn("agent could not generate sbom", "agent", agent.Name, "image_id", up.ImageID, "err", up.Error)
 	} else {
 		h.logger.Info("sbom received", "agent", agent.Name, "image_id", up.ImageID, "bytes", len(up.Document), "duration_ms", up.DurationMS)
+	}
+	h.writeJSON(w, http.StatusOK, struct{}{})
+}
+
+func (h *Hub) jobResult(w http.ResponseWriter, r *http.Request) {
+	agent := agentFrom(r.Context())
+	var res protocol.JobResult
+	if !h.decode(w, r, maxJobBody, &res) {
+		return
+	}
+	job, err := h.store.FinishJob(r.Context(), agent.ID, res, time.Now())
+	switch {
+	case errors.Is(err, store.ErrJobUnknown):
+		h.logger.Warn("unsolicited job result rejected", "agent", agent.Name, "job_id", res.ID, "remote", r.RemoteAddr)
+		h.fail(w, http.StatusConflict, err)
+		return
+	case errors.Is(err, store.ErrJobResult):
+		h.fail(w, http.StatusBadRequest, err)
+		return
+	case err != nil:
+		h.logger.Error("save job result", "agent", agent.Name, "job_id", res.ID, "err", err)
+		h.fail(w, http.StatusInternalServerError, errors.New("could not save job result"))
+		return
+	}
+	if h.jobFinished != nil {
+		h.jobFinished(r.Context(), job)
 	}
 	h.writeJSON(w, http.StatusOK, struct{}{})
 }

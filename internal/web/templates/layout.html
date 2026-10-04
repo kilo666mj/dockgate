@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}} · dockgate</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header>
+  <a class="brand" href="/jobs">dockgate</a>
+  {{with .Session}}{{if .Subject}}
+  <form method="post" action="/logout" class="signout">
+    <input type="hidden" name="csrf" value="{{.CSRF}}">
+    <span class="who">{{.Email}}</span>
+    <button type="submit" class="link">Sign out</button>
+  </form>
+  {{end}}{{end}}
+</header>
+<main>
+{{template "content" .}}
+</main>
+<footer>dockgate {{.Version}}</footer>
+</body>
+</html>

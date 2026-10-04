@@ -1,0 +1,31 @@
+{{define "content"}}
+<h1>Update jobs</h1>
+<section>
+  <h2>Open</h2>
+  {{if .Open}}
+  <ul class="jobs">
+  {{range .Open}}
+    <li><a href="/jobs/{{.ID}}">
+      <span class="state s-{{.State}}">{{label .State}}</span>
+      <span class="what"><strong>{{.ContainerName}}</strong> on {{.Host}}</span>
+      <span class="meta">{{len .Gate.Fixes}} fixed{{if .Gate.Introduces}}, <span class="warn">{{len .Gate.Introduces}} introduced</span>{{end}} · {{when .CreatedAt}}</span>
+    </a></li>
+  {{end}}
+  </ul>
+  {{else}}<p class="muted">Nothing waiting.</p>{{end}}
+</section>
+<section>
+  <h2>Recent</h2>
+  {{if .Closed}}
+  <ul class="jobs">
+  {{range .Closed}}
+    <li><a href="/jobs/{{.ID}}">
+      <span class="state s-{{.State}}">{{label .State}}</span>
+      <span class="what"><strong>{{.ContainerName}}</strong> on {{.Host}}</span>
+      <span class="meta">{{when .UpdatedAt}}</span>
+    </a></li>
+  {{end}}
+  </ul>
+  {{else}}<p class="muted">No finished jobs yet.</p>{{end}}
+</section>
+{{end}}

@@ -4,11 +4,13 @@ dockgate watches a small fleet of Docker hosts from one place. An agent on
 each host reports containers, images and available image updates to a
 central server over mutual TLS, and inventories each image for
 vulnerability scanning. The server exports per-host checks to Fleetglass and
-can alert through Tintwire. Later phases add gated updates and policy
-auditing; see [PLAN.md](PLAN.md).
+can alert through Tintwire. Updates run as gated jobs: an assistant or
+operator requests one, a person approves it in the web UI, and the host's
+agent recreates the container. Policy auditing comes later; see
+[PLAN.md](PLAN.md).
 
-Status: phases 1 (reporting) and 2 (vulnerability scanning). There is no web
-UI yet.
+Status: phases 1 (reporting) and 2 (vulnerability scanning), and phase 3's
+update jobs with the approval UI. Fleet and host views are not built yet.
 
 ## How it works
 
@@ -101,7 +103,49 @@ dockgate agent run
 
 The agent keeps its key and certificates in `-state-dir`
 (default `/var/lib/dockgate-agent`). It needs access to the Docker socket,
-which is equivalent to root on the host.
+which is equivalent to root on the host. `-jobs=false` keeps a host
+report-only.
+
+## Update jobs
+
+An update job moves one container to the update candidate the server has
+scanned. It is requested over MCP (`dockgate_update_request`) or with
+`dockgate server jobs request -host H -container C -reason "..."`.
+
+1. **Gate.** The request is denied when there is no available update, the
+   candidate scan is missing or failed, the container is not running, the
+   image matches `-own-image-prefixes` (fix those with a pull request), or the
+   container already has an open job. Otherwise the job waits for approval,
+   with the critical/high findings the update fixes, introduces and leaves.
+   A candidate that introduces findings is flagged, not hidden.
+2. **Approve.** A Tintwire card links to the job page. Approving needs an
+   OIDC sign-in by an allowed email or group, and re-checks that the
+   candidate is still current. `dockgate server jobs approve|reject JOB_ID`
+   on the server host does the same. Nobody approving within 24 hours
+   expires the job.
+3. **Run.** The host's agent receives the approved job once, with its next
+   report. It pulls `repository@digest`, tags it with the container's
+   reference, renames and stops the old container, creates the new one with
+   the same configuration, labels, networks and volumes (dropping settings
+   that only echoed the old image's defaults), and waits for it to be healthy
+   or to stay up. If that fails, it removes the new container and restores
+   the old one. Compose containers are recreated the same way, so the agent
+   needs no compose files.
+
+Every step is recorded with who did it; `dockgate_job_status`, the job page
+and `dockgate server jobs show JOB_ID` show the history and the agent's step
+log.
+
+### Web UI
+
+```sh
+dockgate server run -web-listen 127.0.0.1:8099 -web-url https://dockgate.example \
+  -oidc-issuer https://id.example -oidc-client-id dockgate -oidc-allowed-emails you@example.com
+```
+
+with the client secret in `DOCKGATE_OIDC_CLIENT_SECRET`. Register the OIDC
+client with the redirect URL `<web-url>/auth/callback`. The UI refuses to
+start without OIDC and an allow list. Serve it behind an HTTPS proxy.
 
 ## Taskboard tasks for actionable updates
 
@@ -124,7 +168,9 @@ credential's policy must allow the requirement token and `task:sensitive`.
 ## MCP for agents
 
 `dockgate server run -mcp-listen 127.0.0.1:8098 -mcp-token-file /etc/dockgate/mcp.token`
-serves read-only MCP tools over Streamable HTTP at `/mcp`:
+serves MCP tools over Streamable HTTP at `/mcp`. All are read-only except
+`dockgate_update_request`, which only files a job that a person must
+approve:
 
 | Tool | Returns |
 | --- | --- |
@@ -136,12 +182,15 @@ serves read-only MCP tools over Streamable HTTP at `/mcp`:
 | `dockgate_ignores_list` | active ignore rules |
 | `dockgate_update_impact` | for each available update: critical/high findings it fixes and introduces, and whether it is actionable |
 | `dockgate_scan_failures` | containers whose image could not be inventoried or matched |
+| `dockgate_update_request` | files an update job; returns it pending approval (with `approval_url`) or denied with the reason |
+| `dockgate_job_status` | one job: state, gate, decision, agent step log and history |
+| `dockgate_jobs` | recent jobs, optionally for one host or only open ones |
 
 Every request needs `Authorization: Bearer <token>`. The listener is meant for
 loopback behind an HTTPS proxy that admits only your MCP gateway; the SDK's
 localhost Host check is disabled for that reason, so never expose the
-listener directly. Enrollment, tokens, revocation and settings are not
-available over MCP.
+listener directly. Approving jobs, enrollment, tokens, revocation and
+settings are not available over MCP.
 
 ## Fleetglass checks
 

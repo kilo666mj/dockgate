@@ -11,9 +11,16 @@
           - dockgate_fleetglass_url | length == 0 or dockgate_fleetglass_token | length > 0
           - dockgate_tintwire_url | length == 0 or dockgate_tintwire_token | length > 0
           - dockgate_taskboard_url | length == 0 or dockgate_taskboard_token | length > 0
+          - >-
+            dockgate_web_listen | length == 0 or (dockgate_web_url is match('^https://')
+            and dockgate_oidc_issuer | length > 0 and dockgate_oidc_client_id | length > 0
+            and dockgate_oidc_client_secret | length > 0
+            and (dockgate_oidc_allowed_emails | length > 0 or dockgate_oidc_allowed_groups | length > 0))
         fail_msg: >-
-          Set dockgate_agent_hosts (names agents use to reach the server) and,
-          when dockgate_fleetglass_url is set, dockgate_fleetglass_token.
+          Set dockgate_agent_hosts (names agents use to reach the server); a
+          token for each configured Fleetglass, Tintwire and Taskboard URL; and,
+          with dockgate_web_listen, an https dockgate_web_url, the OIDC issuer,
+          client ID and secret, and allowed emails or groups.
 
     - name: Record the commit being deployed
       ansible.builtin.command:

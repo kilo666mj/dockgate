@@ -1,0 +1,75 @@
+{{define "content"}}
+{{with .Job}}
+<p class="crumb"><a href="/jobs">Update jobs</a></p>
+<h1>{{.ContainerName}} <span class="muted">on {{.Host}}</span></h1>
+<p><span class="state s-{{.State}}">{{label .State}}</span></p>
+{{with $.Notice}}<p class="notice">{{.}}</p>{{end}}
+
+<section class="card">
+  <dl>
+    <dt>Image</dt><dd><code>{{.Reference}}</code></dd>
+    <dt>Current</dt><dd><code title="{{.CurrentDigest}}">{{if .CurrentDigest}}{{short .CurrentDigest}}{{else}}unknown{{end}}</code></dd>
+    <dt>Candidate</dt><dd><code title="{{.Digest}}">{{short .Digest}}</code> <span class="muted">{{.Platform}}</span></dd>
+    <dt>Requested by</dt><dd>{{.RequestedBy}} · {{when .CreatedAt}}</dd>
+    {{with .Reason}}<dt>Reason</dt><dd class="untrusted">{{.}}</dd>{{end}}
+    {{with .TaskID}}<dt>Taskboard task</dt><dd><code>{{.}}</code></dd>{{end}}
+    {{if .DecidedBy}}<dt>Decided by</dt><dd>{{.DecidedBy}} · {{when .DecidedAt}}{{with .Note}} — <span class="untrusted">{{.}}</span>{{end}}</dd>{{end}}
+  </dl>
+</section>
+
+{{if .Gate.Denial}}
+<section class="card"><h2>Denied by the gate</h2><p>{{.Gate.Denial}}</p></section>
+{{else}}
+<section class="card">
+  <h2>Update gate</h2>
+  <div class="metrics">
+    <div><b>{{len .Gate.Fixes}}</b><span>critical/high fixed</span></div>
+    <div><b>{{$.CriticalFixed}}</b><span>critical fixed</span></div>
+    <div class="{{if .Gate.Introduces}}bad{{end}}"><b>{{len .Gate.Introduces}}</b><span>introduced</span></div>
+    <div><b>{{.Gate.Remaining}}</b><span>remaining</span></div>
+  </div>
+  {{if .Gate.Hold}}<p class="notice bad">The candidate introduces critical or high findings. Check them before approving.</p>{{end}}
+  {{if .Gate.Introduces}}
+  <h3>Introduced</h3>
+  <ul class="findings">{{range .Gate.Introduces}}<li><span class="sev {{lower .Severity}}">{{.Severity}}</span> {{.VulnID}} <span class="muted">{{.Pkg}}</span></li>{{end}}</ul>
+  {{end}}
+  {{if .Gate.Fixes}}
+  <details {{if le (len .Gate.Fixes) 12}}open{{end}}>
+    <summary>Fixed ({{len .Gate.Fixes}})</summary>
+    <ul class="findings">{{range .Gate.Fixes}}<li><span class="sev {{lower .Severity}}">{{.Severity}}</span> {{.VulnID}} <span class="muted">{{.Pkg}}</span></li>{{end}}</ul>
+  </details>
+  {{end}}
+</section>
+{{end}}
+
+{{if $.Pending}}
+<section class="card decide">
+  <h2>Decide</h2>
+  <p>Approving lets the agent on <strong>{{.Host}}</strong> pull <code>{{short .Digest}}</code>, stop <strong>{{.ContainerName}}</strong>, recreate it with the same settings, and roll back if it does not come up healthy.</p>
+  <form method="post" action="/jobs/{{.ID}}/approve">
+    <input type="hidden" name="csrf" value="{{$.Session.CSRF}}">
+    <label>Note (optional) <input type="text" name="note" maxlength="500"></label>
+    <div class="actions">
+      <button type="submit" class="primary">Approve update</button>
+      <button type="submit" formaction="/jobs/{{.ID}}/reject" class="secondary">Reject</button>
+    </div>
+  </form>
+</section>
+{{end}}
+
+{{with .Result}}
+<section class="card">
+  <h2>Agent result: {{label .State}}</h2>
+  {{with .Error}}<p class="notice bad untrusted">{{.}}</p>{{end}}
+  <ol class="steps">{{range .Steps}}<li><pre>{{.}}</pre></li>{{end}}</ol>
+</section>
+{{end}}
+
+<section class="card">
+  <h2>History</h2>
+  <ul class="history">
+  {{range .Events}}<li><span class="when">{{when .At}}</span> <span class="state s-{{.State}}">{{label .State}}</span> {{.Actor}}{{with .Note}} — <span class="untrusted">{{.}}</span>{{end}}</li>{{end}}
+  </ul>
+</section>
+{{end}}
+{{end}}

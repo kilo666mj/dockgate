@@ -1,0 +1,8 @@
+{{define "content"}}
+<section class="card narrow">
+  <h1>Sign in</h1>
+  <p>Approving updates requires signing in.</p>
+  {{with .Error}}<p class="notice bad">{{.}}</p>{{end}}
+  <p><a class="button primary" href="/auth/login">Sign in with your identity provider</a></p>
+</section>
+{{end}}

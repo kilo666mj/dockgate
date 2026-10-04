@@ -1,0 +1,57 @@
+:root {
+  --bg: #f6f7f9; --fg: #1d2330; --muted: #6b7385; --card: #fff; --line: #e1e4ea;
+  --accent: #2d6cdf; --accent-fg: #fff; --bad: #c0392b; --bad-bg: #fdecea; --good: #1e8e4e; --warn: #b26a00;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #14171d; --fg: #e4e7ee; --muted: #9aa3b5; --card: #1c2028; --line: #2c323d;
+    --accent: #5b8ef0; --bad: #ff7b6b; --bad-bg: #3a1f1c; --good: #4cc483; --warn: #e3a44a; }
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--fg); }
+header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--card); }
+.brand { font-weight: 700; color: var(--fg); text-decoration: none; }
+.signout { display: flex; gap: 8px; align-items: center; margin: 0; }
+.who { color: var(--muted); font-size: 13px; }
+main { max-width: 860px; margin: 0 auto; padding: 16px; }
+footer { text-align: center; color: var(--muted); font-size: 12px; padding: 24px 16px; }
+h1 { font-size: 22px; margin: 8px 0 12px; } h2 { font-size: 16px; margin: 0 0 10px; } h3 { font-size: 14px; margin: 12px 0 6px; }
+a { color: var(--accent); }
+.muted { color: var(--muted); }
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin: 12px 0; }
+.narrow { max-width: 420px; margin: 40px auto; }
+code, pre { font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
+dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; }
+dt { color: var(--muted); } dd { margin: 0; overflow-wrap: anywhere; }
+.jobs { list-style: none; padding: 0; margin: 0; }
+.jobs li a { display: grid; grid-template-columns: 9.5em 1fr; gap: 2px 12px; padding: 10px 12px; margin: 6px 0; background: var(--card); border: 1px solid var(--line); border-radius: 8px; color: var(--fg); text-decoration: none; }
+.jobs .meta { grid-column: 2; color: var(--muted); font-size: 13px; }
+.state { display: inline-block; font-size: 12px; font-weight: 600; padding: 2px 8px; border-radius: 99px; background: var(--line); text-transform: capitalize; }
+.s-pending_approval { background: #fff2cc; color: #7a5200; }
+.s-approved, .s-dispatched { background: #dde8fb; color: #1e4fa8; }
+.s-succeeded { background: #dcf3e5; color: #16673a; }
+.s-failed, .s-lost, .s-rolled_back, .s-denied { background: var(--bad-bg); color: var(--bad); }
+.warn { color: var(--warn); }
+.metrics { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 8px; }
+.metrics div { border: 1px solid var(--line); border-radius: 8px; padding: 8px; text-align: center; }
+.metrics b { display: block; font-size: 20px; } .metrics span { font-size: 12px; color: var(--muted); }
+.metrics .bad b { color: var(--bad); }
+.notice { padding: 8px 12px; border-radius: 8px; background: var(--line); }
+.notice.bad { background: var(--bad-bg); color: var(--bad); }
+.findings { list-style: none; padding: 0; margin: 4px 0; columns: 2; font-size: 13px; }
+.sev { font-size: 11px; font-weight: 700; padding: 0 5px; border-radius: 4px; }
+.sev.critical { background: var(--bad); color: #fff; } .sev.high { background: var(--warn); color: #fff; }
+.decide label { display: block; margin: 8px 0; } .decide input[type=text] { width: 100%; padding: 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); }
+.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+button, .button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--line); background: var(--card); color: var(--fg); cursor: pointer; text-decoration: none; display: inline-block; }
+.primary { background: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
+button.link { border: 0; background: none; color: var(--accent); padding: 0; }
+.steps { padding-left: 20px; } .steps li { margin: 4px 0; }
+.history { list-style: none; padding: 0; margin: 0; font-size: 13px; } .history li { margin: 4px 0; }
+.when { color: var(--muted); }
+.crumb { margin: 0; font-size: 13px; }
+@media (max-width: 600px) {
+  .metrics { grid-template-columns: repeat(2, 1fr); }
+  .findings { columns: 1; }
+  .jobs li a { grid-template-columns: 1fr; } .jobs .meta { grid-column: 1; }
+}

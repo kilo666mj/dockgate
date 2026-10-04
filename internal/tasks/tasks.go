@@ -252,9 +252,12 @@ func (s *Syncer) summary(u store.UpdateImpact) string {
 	if s.ownImage(u.Image) {
 		b.WriteString("Fix: this image is built from the operator's own repository. Open a pull request that rebuilds it on an updated base image; do not pull and recreate.\n\n")
 	} else {
-		b.WriteString("Fix: pull the candidate image and recreate the container, keeping its configuration. Use dockgate's gated update job once available; do not run docker commands over SSH.\n\n")
+		b.WriteString("Fix: request the update with dockgate_update_request (host, container, reason, taskboard_task_id). It returns an approval_url; " +
+			"the operator approves in the dockgate web UI, then the host's agent recreates the container with the scanned image and rolls back if it does not come up. " +
+			"Follow it with dockgate_job_status. Do not run docker commands over SSH.\n\n")
 	}
-	b.WriteString("Before acting, re-check with dockgate_update_impact and dockgate_host_containers (compose project and working directory). Ask for approval with a blocking escalation before changing anything.\n\n")
+	b.WriteString("Before acting, re-check with dockgate_update_impact and dockgate_host_containers (compose project and working directory). " +
+		"Ask for approval with a blocking escalation before changing anything; for an update job, include the approval_url.\n\n")
 	if len(u.Fixes) > 0 {
 		b.WriteString("Fixes:\n")
 		writeFindings(&b, u.Fixes)

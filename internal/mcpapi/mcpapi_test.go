@@ -15,6 +15,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"go.michaelspost.com/mcpkit/mcpkittest"
 
+	"go.michaelspost.com/dockgate/internal/jobs"
 	"go.michaelspost.com/dockgate/internal/protocol"
 	"go.michaelspost.com/dockgate/internal/store"
 )
@@ -98,7 +99,7 @@ func call(t *testing.T, session *mcp.ClientSession, name string, args map[string
 }
 
 func TestTools(t *testing.T) {
-	session := mcpkittest.Connect(t, NewServer(seeded(t), "test", slog.New(slog.NewTextHandler(io.Discard, nil))))
+	session := mcpkittest.Connect(t, NewServer(seeded(t), nil, "test", slog.New(slog.NewTextHandler(io.Discard, nil))))
 
 	tools, err := session.ListTools(t.Context(), nil)
 	if err != nil {
@@ -180,7 +181,7 @@ func TestTools(t *testing.T) {
 func TestHandlerRequiresBearerToken(t *testing.T) {
 	token := strings.Repeat("k", 40)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h, err := Handler(NewServer(seeded(t), "test", logger), token, logger)
+	h, err := Handler(NewServer(seeded(t), nil, "test", logger), token, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +215,54 @@ func TestHandlerRequiresBearerToken(t *testing.T) {
 	if got := post("Bearer " + token); got != http.StatusOK {
 		t.Errorf("valid token: status %d, want 200", got)
 	}
-	if _, err := Handler(NewServer(seeded(t), "test", logger), "short", logger); err == nil {
+	if _, err := Handler(NewServer(seeded(t), nil, "test", logger), "short", logger); err == nil {
 		t.Error("short token accepted")
+	}
+}
+
+func TestJobTools(t *testing.T) {
+	st := seeded(t)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	js := &jobs.Service{Store: st, Logger: logger, BaseURL: "https://dockgate.example"}
+	session := mcpkittest.Connect(t, NewServer(st, js, "test", logger))
+
+	tools, err := session.ListTools(t.Context(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mutating := 0
+	for _, tool := range tools.Tools {
+		if !tool.Annotations.ReadOnlyHint {
+			mutating++
+			if tool.Name != "dockgate_update_request" || tool.Annotations.DestructiveHint == nil || *tool.Annotations.DestructiveHint {
+				t.Errorf("unexpected non-read-only tool %s %+v", tool.Name, tool.Annotations)
+			}
+		}
+	}
+	if len(tools.Tools) != 11 || mutating != 1 {
+		t.Fatalf("tools = %d (%d mutating), want 11 with only the request tool mutating", len(tools.Tools), mutating)
+	}
+
+	if res := call(t, session, "dockgate_update_request", map[string]any{"host": "alpha", "container": "db"}, nil); !res.IsError {
+		t.Fatal("request without a reason accepted")
+	}
+	var out jobOutput
+	call(t, session, "dockgate_update_request", map[string]any{"host": "alpha", "container": "db", "reason": "fix CVE-2026-1", "requester": "worker-1"}, &out)
+	if out.Job.State != store.JobDenied || !strings.Contains(out.Job.Gate.Denial, "scan") || out.Job.RequestedBy != "mcp:worker-1" || out.Job.ApprovalURL != "" {
+		t.Fatalf("request = %+v", out.Job)
+	}
+	var status jobOutput
+	call(t, session, "dockgate_job_status", map[string]any{"job_id": out.Job.ID}, &status)
+	if status.Job.ID != out.Job.ID || len(status.Job.Events) != 1 {
+		t.Fatalf("status = %+v", status.Job)
+	}
+	var list jobListOutput
+	call(t, session, "dockgate_jobs", map[string]any{"open_only": true}, &list)
+	if len(list.Jobs) != 0 {
+		t.Fatalf("open jobs = %+v", list.Jobs)
+	}
+	call(t, session, "dockgate_jobs", map[string]any{"host": "alpha"}, &list)
+	if len(list.Jobs) != 1 {
+		t.Fatalf("jobs = %+v", list.Jobs)
 	}
 }
