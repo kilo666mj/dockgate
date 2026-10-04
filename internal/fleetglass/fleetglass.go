@@ -267,9 +267,18 @@ func vulnCheck(a store.Agent, fs []store.HostFinding, cov store.ScanCoverage, ob
 	if crit > 0 || high > 0 {
 		c.Status = "warn"
 	}
-	if cov.Failed > 0 && c.Status == "ok" {
+	// Zero findings mean nothing unless the images were scanned: with
+	// scanning stalled or disabled, a host must not look clean.
+	switch {
+	case cov.Containers > 0 && cov.Scanned == 0:
+		c.Status = "unknown"
+		c.Summary = fmt.Sprintf("not scanned yet (0/%d containers)", cov.Containers)
+	case cov.Scanned < cov.Containers:
 		c.Status = "warn"
-		c.Summary += fmt.Sprintf("; %d containers could not be scanned", cov.Failed)
+		c.Summary += fmt.Sprintf("; scanned %d/%d containers", cov.Scanned, cov.Containers)
+		if cov.Failed > 0 {
+			c.Summary += fmt.Sprintf(", %d could not be scanned", cov.Failed)
+		}
 	}
 	return c
 }

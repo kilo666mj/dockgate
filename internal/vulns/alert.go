@@ -48,6 +48,9 @@ func (a *Alerter) Check(ctx context.Context) {
 
 func (a *Alerter) check(ctx context.Context) error {
 	now := time.Now()
+	if err := a.Store.ClearSuppressedAlerts(ctx, now); err != nil {
+		return err
+	}
 	findings, err := a.Store.ActiveFindings(ctx, "", now)
 	if err != nil {
 		return err

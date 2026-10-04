@@ -22,7 +22,7 @@ type Scanner struct {
 	Logger  *slog.Logger
 	// RefreshEvery is how often to look for a newer database.
 	RefreshEvery time.Duration
-	// After a pass that stored results, AfterPass runs (alerts).
+	// AfterPass runs after every pass (alerts).
 	AfterPass func(ctx context.Context)
 }
 
@@ -35,9 +35,6 @@ const (
 // Run scans until ctx ends.
 func (s *Scanner) Run(ctx context.Context) {
 	var lastRefresh time.Time
-	// Check alerts after the first pass even if it scanned nothing, so a
-	// restart does not delay alerts until the next new image.
-	first := true
 	for {
 		if time.Since(lastRefresh) >= s.RefreshEvery {
 			if err := s.Matcher.RefreshDB(ctx); err != nil {
@@ -46,11 +43,13 @@ func (s *Scanner) Run(ctx context.Context) {
 				lastRefresh = time.Now()
 			}
 		}
-		if n, err := s.Pass(ctx); err != nil && ctx.Err() == nil {
+		if _, err := s.Pass(ctx); err != nil && ctx.Err() == nil {
 			s.Logger.Error("scan pass", "err", err)
-		} else if (n > 0 || first) && s.AfterPass != nil {
+		}
+		// Alerts are checked every loop, not only after new scans: an expiring
+		// ignore rule or a restart must not wait for the next new image.
+		if s.AfterPass != nil {
 			s.AfterPass(ctx)
-			first = false
 		}
 		select {
 		case <-ctx.Done():
@@ -90,12 +89,12 @@ func (s *Scanner) Pass(ctx context.Context) (int, error) {
 				break
 			}
 			scanErr = err.Error()
-			s.Logger.Warn("match sbom", "image_id", id, "err", err)
+			s.Logger.Warn("match sbom", "agent_id", id.AgentID, "image_id", id.ImageID, "err", err)
 		}
 		if err := s.Store.SaveScan(ctx, id, version, findings, scanErr, time.Now()); err != nil {
 			return done, err
 		}
-		s.Logger.Info("image scanned", "image_id", id, "findings", len(findings), "db", version, "duration", time.Since(start).Round(time.Millisecond))
+		s.Logger.Info("image scanned", "agent_id", id.AgentID, "image_id", id.ImageID, "findings", len(findings), "db", version, "duration", time.Since(start).Round(time.Millisecond))
 		done++
 	}
 	return done, nil

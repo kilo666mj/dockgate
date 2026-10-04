@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -56,7 +58,7 @@ func TestRequestSBOMsPacing(t *testing.T) {
 	if ids, _ := s.RequestSBOMs(ctx, id, 5, AgentQueue{}, now.Add(7*time.Hour)); len(ids) != 1 || ids[0] != "sha256:bbb" {
 		t.Fatalf("failed image not retried after backoff: %v", ids)
 	}
-	doc, err := s.LoadSBOM(ctx, "sha256:aaa")
+	doc, err := s.LoadSBOM(ctx, SBOMKey{AgentID: id, ImageID: "sha256:aaa"})
 	if err != nil || string(doc) != `{"a":1}` {
 		t.Fatalf("LoadSBOM = %q, %v", doc, err)
 	}
@@ -92,6 +94,9 @@ func TestScansFindingsIgnoresAndCoverage(t *testing.T) {
 		protocol.Container{ID: "c2", Name: "web", Image: "ghcr.io/example/web:latest", ImageID: "sha256:web"},
 	)
 	now := time.Now()
+	if _, err := s.RequestSBOMs(ctx, id, 5, AgentQueue{}, now); err != nil {
+		t.Fatal(err)
+	}
 	for _, img := range []string{"sha256:pg", "sha256:web"} {
 		if err := s.SaveSBOM(ctx, id, protocol.SBOMUpload{ImageID: img, Format: protocol.FormatCycloneDXJSON, Document: []byte(`{}`)}, now); err != nil {
 			t.Fatal(err)
@@ -104,10 +109,10 @@ func TestScansFindingsIgnoresAndCoverage(t *testing.T) {
 		{VulnID: "CVE-1", Pkg: "libssl3", Installed: "3.0", Fixed: "3.1", Severity: "CRITICAL"},
 		{VulnID: "CVE-2", Pkg: "zlib", Installed: "1.2", Severity: "HIGH"},
 	}
-	if err := s.SaveScan(ctx, "sha256:pg", "db1", pg, "", now); err != nil {
+	if err := s.SaveScan(ctx, SBOMKey{AgentID: id, ImageID: "sha256:pg"}, "db1", pg, "", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SaveScan(ctx, "sha256:web", "db1", nil, "trivy failed", now); err != nil {
+	if err := s.SaveScan(ctx, SBOMKey{AgentID: id, ImageID: "sha256:web"}, "db1", nil, "trivy failed", now); err != nil {
 		t.Fatal(err)
 	}
 	if ids, _ := s.SBOMsToScan(ctx, "db1", 10); len(ids) != 0 {
@@ -141,6 +146,106 @@ func TestScansFindingsIgnoresAndCoverage(t *testing.T) {
 	}
 	if c := cov["alpha"]; c.Containers != 2 || c.Scanned != 1 || c.Failed != 1 {
 		t.Fatalf("coverage = %+v", c)
+	}
+}
+
+func TestSBOMUploadsMustBeRequested(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	now := time.Now()
+	alpha := enrolledWithContainers(t, s, "alpha", protocol.Container{ID: "c1", Name: "db", Image: "postgres:16", ImageID: "sha256:shared"})
+	bravo := enrolledWithContainers(t, s, "bravo", protocol.Container{ID: "c2", Name: "db", Image: "postgres:16", ImageID: "sha256:shared"})
+	doc := func(body string) protocol.SBOMUpload {
+		return protocol.SBOMUpload{ImageID: "sha256:shared", Format: protocol.FormatCycloneDXJSON, Document: []byte(body)}
+	}
+
+	if err := s.SaveSBOM(ctx, alpha, doc(`{"v":"unsolicited"}`), now); !errors.Is(err, ErrUnsolicited) {
+		t.Fatalf("unsolicited upload: err = %v, want ErrUnsolicited", err)
+	}
+	if _, err := s.RequestSBOMs(ctx, alpha, 5, AgentQueue{}, now); err != nil {
+		t.Fatal(err)
+	}
+	// A request to alpha does not let bravo upload for the same image.
+	if err := s.SaveSBOM(ctx, bravo, doc(`{"v":"bravo"}`), now); !errors.Is(err, ErrUnsolicited) {
+		t.Fatalf("other agent's request accepted: err = %v", err)
+	}
+	if err := s.SaveSBOM(ctx, alpha, doc(`{"v":"alpha"}`), now); err != nil {
+		t.Fatal(err)
+	}
+	// The request is consumed: a second upload cannot replace the SBOM.
+	if err := s.SaveSBOM(ctx, alpha, doc(`{"v":"replaced"}`), now); !errors.Is(err, ErrUnsolicited) {
+		t.Fatalf("replacement accepted: err = %v", err)
+	}
+	if got, _ := s.LoadSBOM(ctx, SBOMKey{AgentID: alpha, ImageID: "sha256:shared"}); string(got) != `{"v":"alpha"}` {
+		t.Fatalf("alpha SBOM = %s", got)
+	}
+	// Bravo's results never come from alpha's SBOM.
+	if _, err := s.LoadSBOM(ctx, SBOMKey{AgentID: bravo, ImageID: "sha256:shared"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("bravo sees alpha's SBOM: err = %v", err)
+	}
+	// An error report also consumes the request.
+	if _, err := s.RequestSBOMs(ctx, bravo, 5, AgentQueue{}, now); err != nil {
+		t.Fatal(err)
+	}
+	failed := protocol.SBOMUpload{ImageID: "sha256:shared", Error: "scanner exited 1"}
+	if err := s.SaveSBOM(ctx, bravo, failed, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSBOM(ctx, bravo, failed, now); !errors.Is(err, ErrUnsolicited) {
+		t.Fatalf("repeated error report accepted: err = %v", err)
+	}
+}
+
+func TestClearSuppressedAlerts(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	now := time.Now()
+	keys := []AlertKey{
+		{Repository: "postgres", VulnID: "CVE-1", Pkg: "libssl3"},
+		{Repository: "redis", VulnID: "CVE-1", Pkg: "libssl3"},
+		{Repository: "postgres", VulnID: "CVE-2", Pkg: "zlib"},
+	}
+	if err := s.MarkAlerted(ctx, keys, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddIgnore(ctx, Ignore{VulnID: "CVE-1", Repository: "postgres", Reason: "r", ExpiresAt: now.Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ClearSuppressedAlerts(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Alerted(ctx)
+	if got[keys[0]] || !got[keys[1]] || !got[keys[2]] {
+		t.Fatalf("alerted after clearing = %v, want only the ignored postgres CVE-1 removed", got)
+	}
+}
+
+func TestMigrationDropsOldSBOMTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := s.SetSetting(ctx, "schema_vulns", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkAlerted(ctx, []AlertKey{{Repository: "r", VulnID: "v", Pkg: "p"}}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	s, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if v, _ := s.Setting(ctx, "schema_vulns"); v != schemaVulnsVersion {
+		t.Fatalf("schema_vulns = %q after migration", v)
+	}
+	if got, _ := s.Alerted(ctx); len(got) != 1 {
+		t.Fatalf("alert history lost in migration: %v", got)
 	}
 }
 

@@ -34,8 +34,15 @@ UI yet.
   packages as a CycloneDX SBOM, and uploads it. The server keeps the
   vulnerability database, matches every SBOM against it with a pinned Trivy
   binary, and re-matches the whole fleet when the database updates, without
-  contacting any host. Findings are stored per package, so the same image on
-  several hosts is inventoried once.
+  contacting any host. Findings are stored per package.
+- An agent's SBOM is trusted only for that agent's own containers. The server
+  accepts an upload only for an image it asked that agent for and still
+  awaits, and consumes the request, so an agent can neither push unsolicited
+  SBOMs nor replace another host's. An image shared by several hosts is
+  therefore inventoried once per host.
+- The vulnerability check reports `unknown` until a host's images are
+  scanned, and `warn` while only some are, so a stalled or disabled scanner
+  never looks like a clean host.
 - Alerts go out once per repository, vulnerability and package when a
   fixable finding at an alerting severity (default critical and high) first
   appears. The first run records existing findings as a baseline and sends

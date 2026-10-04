@@ -226,8 +226,8 @@ func TestEnrollReportAndRenew(t *testing.T) {
 	// The first report reply asks for SBOMs of up to two images; the worker
 	// runs the scanner container and uploads them.
 	waitFor(t, func() bool {
-		_, err1 := e.store.LoadSBOM(ctx, "sha256:img1")
-		_, err2 := e.store.LoadSBOM(ctx, "sha256:img2")
+		_, err1 := e.store.LoadSBOM(ctx, store.SBOMKey{AgentID: st.AgentID, ImageID: "sha256:img1"})
+		_, err2 := e.store.LoadSBOM(ctx, store.SBOMKey{AgentID: st.AgentID, ImageID: "sha256:img2"})
 		return err1 == nil && err2 == nil
 	})
 	cancel()
@@ -333,4 +333,26 @@ func waitFor(t *testing.T, cond func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("condition not met before deadline")
+}
+
+func TestUnsolicitedSBOMRejected(t *testing.T) {
+	e := startHub(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	if _, err := agent.Enroll(ctx, e.url, e.token(t, "delta", false), "delta", dir, false); err != nil {
+		t.Fatal(err)
+	}
+	id, err := agent.LoadIdentity(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := `{"image_id":"sha256:notrequested","format":"cyclonedx-json","document":{"bomFormat":"CycloneDX"}}`
+	resp, err := id.HTTPClient().Post(e.url+protocol.PathSBOM, "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("unsolicited upload status = %d, want 409", resp.StatusCode)
+	}
 }

@@ -58,6 +58,9 @@ func setup(t *testing.T) (*store.Store, string) {
 	}}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := st.RequestSBOMs(ctx, "agt_a", 5, store.AgentQueue{}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.SaveSBOM(ctx, "agt_a", protocol.SBOMUpload{ImageID: "sha256:pg", Format: protocol.FormatCycloneDXJSON, Document: []byte(`{}`)}, time.Now()); err != nil {
 		t.Fatal(err)
 	}
@@ -143,5 +146,40 @@ func TestParseReport(t *testing.T) {
 	}
 	if _, err := ParseReport([]byte("not json")); err == nil {
 		t.Fatal("ParseReport accepted garbage")
+	}
+}
+
+func TestExpiredIgnoreAlertsAgainWithoutNewScans(t *testing.T) {
+	st, _ := setup(t)
+	ctx := context.Background()
+	m := &fakeMatcher{version: "db1", findings: []store.Finding{{VulnID: "CVE-1", Pkg: "libssl3", Installed: "3.0", Fixed: "3.1", Severity: "CRITICAL"}}}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	s := &Scanner{Store: st, Matcher: m, Logger: logger}
+	pub := &fakePublisher{}
+	a := &Alerter{Store: st, Publisher: pub, Logger: logger, Severities: []string{"CRITICAL", "HIGH"}}
+	if _, err := s.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Baseline, then a new finding alerts.
+	if err := st.SetSetting(ctx, baselineKey, "set"); err != nil {
+		t.Fatal(err)
+	}
+	a.Check(ctx)
+	if len(pub.cards) != 1 {
+		t.Fatalf("cards = %d, want the alert", len(pub.cards))
+	}
+	// A short ignore hides it; when the ignore expires the finding alerts
+	// again, with no scan in between.
+	if _, err := st.AddIgnore(ctx, store.Ignore{VulnID: "CVE-1", Reason: "temporary", ExpiresAt: time.Now().Add(time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	a.Check(ctx)
+	if len(pub.cards) != 1 {
+		t.Fatalf("ignored finding alerted: %d cards", len(pub.cards))
+	}
+	time.Sleep(2 * time.Second)
+	a.Check(ctx)
+	if len(pub.cards) != 2 {
+		t.Fatalf("expired ignore did not re-alert: %d cards", len(pub.cards))
 	}
 }

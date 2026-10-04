@@ -13,30 +13,50 @@ import (
 	"go.michaelspost.com/dockgate/internal/protocol"
 )
 
+// schemaVulnsVersion changes when the SBOM, scan and findings tables change
+// shape. Those tables hold only derived data, so a migration drops them and
+// agents re-inventory; ignore rules and alert history are kept.
+const schemaVulnsVersion = "2"
+
+const schemaSettings = `
+CREATE TABLE IF NOT EXISTS settings (
+	key    TEXT PRIMARY KEY,
+	value  TEXT NOT NULL
+);
+`
+
+// SBOMs, scans and findings are keyed by agent as well as image: an agent's
+// SBOM is trusted only for that agent's own containers, so a compromised
+// agent cannot change another host's results.
 const schemaVulns = `
 CREATE TABLE IF NOT EXISTS sboms (
-	image_id    TEXT PRIMARY KEY,
+	agent_id    TEXT NOT NULL,
+	image_id    TEXT NOT NULL,
 	format      TEXT NOT NULL,
 	generator   TEXT NOT NULL,
 	size_bytes  INTEGER NOT NULL,
 	document    BLOB NOT NULL,
-	agent_id    TEXT NOT NULL,
-	created_at  INTEGER NOT NULL
+	created_at  INTEGER NOT NULL,
+	PRIMARY KEY (agent_id, image_id)
 );
 CREATE TABLE IF NOT EXISTS sbom_requests (
-	image_id      TEXT PRIMARY KEY,
 	agent_id      TEXT NOT NULL,
+	image_id      TEXT NOT NULL,
 	requested_at  INTEGER NOT NULL,
 	failed_at     INTEGER,
-	error         TEXT NOT NULL DEFAULT ''
+	error         TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (agent_id, image_id)
 );
 CREATE TABLE IF NOT EXISTS scans (
-	image_id    TEXT PRIMARY KEY,
+	agent_id    TEXT NOT NULL,
+	image_id    TEXT NOT NULL,
 	db_version  TEXT NOT NULL,
 	scanned_at  INTEGER NOT NULL,
-	error       TEXT NOT NULL DEFAULT ''
+	error       TEXT NOT NULL DEFAULT '',
+	PRIMARY KEY (agent_id, image_id)
 );
 CREATE TABLE IF NOT EXISTS findings (
+	agent_id   TEXT NOT NULL,
 	image_id   TEXT NOT NULL,
 	vuln_id    TEXT NOT NULL,
 	pkg        TEXT NOT NULL,
@@ -46,7 +66,7 @@ CREATE TABLE IF NOT EXISTS findings (
 	severity   TEXT NOT NULL,
 	title      TEXT NOT NULL DEFAULT '',
 	url        TEXT NOT NULL DEFAULT '',
-	PRIMARY KEY (image_id, vuln_id, pkg, installed)
+	PRIMARY KEY (agent_id, image_id, vuln_id, pkg, installed)
 );
 CREATE TABLE IF NOT EXISTS vuln_ignores (
 	id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -64,11 +84,35 @@ CREATE TABLE IF NOT EXISTS vuln_alerts (
 	alerted_at  INTEGER NOT NULL,
 	PRIMARY KEY (repository, vuln_id, pkg)
 );
-CREATE TABLE IF NOT EXISTS settings (
-	key    TEXT PRIMARY KEY,
-	value  TEXT NOT NULL
-);
 `
+
+// ErrUnsolicited rejects an SBOM upload the server did not ask this agent
+// for.
+var ErrUnsolicited = errors.New("no outstanding SBOM request for this agent and image")
+
+func migrateVulns(db *sql.DB) error {
+	if _, err := db.Exec(schemaSettings); err != nil {
+		return err
+	}
+	var version string
+	err := db.QueryRow(`SELECT value FROM settings WHERE key = 'schema_vulns'`).Scan(&version)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if version != schemaVulnsVersion {
+		for _, t := range []string{"sboms", "sbom_requests", "scans", "findings"} {
+			if _, err := db.Exec(`DROP TABLE IF EXISTS ` + t); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := db.Exec(schemaVulns); err != nil {
+		return err
+	}
+	_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('schema_vulns', ?)
+		ON CONFLICT(key) DO UPDATE SET value = excluded.value`, schemaVulnsVersion)
+	return err
+}
 
 // SBOM request pacing. A request the agent does not list as pending is
 // treated as lost after sbomGrace (the agent may not have reported since);
@@ -92,8 +136,8 @@ type AgentQueue struct {
 func (s *Store) RequestSBOMs(ctx context.Context, agentID string, limit int, queue AgentQueue, now time.Time) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT DISTINCT c.image_id, r.requested_at, r.failed_at FROM containers c
-		LEFT JOIN sboms b ON b.image_id = c.image_id
-		LEFT JOIN sbom_requests r ON r.image_id = c.image_id
+		LEFT JOIN sboms b ON b.agent_id = c.agent_id AND b.image_id = c.image_id
+		LEFT JOIN sbom_requests r ON r.agent_id = c.agent_id AND r.image_id = c.image_id
 		WHERE c.agent_id = ? AND c.image_id LIKE 'sha256:%' AND b.image_id IS NULL
 		ORDER BY c.image_id`, agentID)
 	if err != nil {
@@ -127,9 +171,9 @@ func (s *Store) RequestSBOMs(ctx context.Context, agentID string, limit int, que
 	}
 	for _, id := range ids {
 		if _, err := s.db.ExecContext(ctx, `
-			INSERT INTO sbom_requests (image_id, agent_id, requested_at) VALUES (?, ?, ?)
-			ON CONFLICT(image_id) DO UPDATE SET agent_id = excluded.agent_id, requested_at = excluded.requested_at,
-				failed_at = NULL, error = ''`, id, agentID, now.Unix()); err != nil {
+			INSERT INTO sbom_requests (agent_id, image_id, requested_at) VALUES (?, ?, ?)
+			ON CONFLICT(agent_id, image_id) DO UPDATE SET requested_at = excluded.requested_at,
+				failed_at = NULL, error = ''`, agentID, id, now.Unix()); err != nil {
 			return nil, err
 		}
 	}
@@ -137,48 +181,72 @@ func (s *Store) RequestSBOMs(ctx context.Context, agentID string, limit int, que
 }
 
 // SaveSBOM stores an uploaded SBOM, or records why the agent could not make
-// one. A new SBOM invalidates the image's previous scan.
+// one. It accepts only an image the server asked this agent for and still
+// awaits, and consumes that request in the same transaction, so an agent can
+// neither push unsolicited SBOMs nor replace one it already delivered. A new
+// SBOM invalidates the image's previous scan for this agent.
 func (s *Store) SaveSBOM(ctx context.Context, agentID string, up protocol.SBOMUpload, now time.Time) error {
-	if up.Error != "" {
-		_, err := s.db.ExecContext(ctx, `
-			INSERT INTO sbom_requests (image_id, agent_id, requested_at, failed_at, error) VALUES (?, ?, ?, ?, ?)
-			ON CONFLICT(image_id) DO UPDATE SET failed_at = excluded.failed_at, error = excluded.error`,
-			up.ImageID, agentID, now.Unix(), now.Unix(), truncate(up.Error, 2000))
-		return err
-	}
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	if _, err := zw.Write(up.Document); err != nil {
-		return err
-	}
-	if err := zw.Close(); err != nil {
-		return err
+	var doc []byte
+	if up.Error == "" {
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		if _, err := zw.Write(up.Document); err != nil {
+			return err
+		}
+		if err := zw.Close(); err != nil {
+			return err
+		}
+		doc = buf.Bytes()
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO sboms (image_id, format, generator, size_bytes, document, agent_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(image_id) DO UPDATE SET format = excluded.format, generator = excluded.generator,
-			size_bytes = excluded.size_bytes, document = excluded.document, agent_id = excluded.agent_id,
-			created_at = excluded.created_at`,
-		up.ImageID, up.Format, up.Generator, len(up.Document), buf.Bytes(), agentID, now.Unix()); err != nil {
+
+	// Claim the outstanding request; zero rows means none exists.
+	var res sql.Result
+	if up.Error != "" {
+		res, err = tx.ExecContext(ctx, `UPDATE sbom_requests SET failed_at = ?, error = ?
+			WHERE agent_id = ? AND image_id = ? AND failed_at IS NULL`,
+			now.Unix(), truncate(up.Error, 2000), agentID, up.ImageID)
+	} else {
+		res, err = tx.ExecContext(ctx, `DELETE FROM sbom_requests
+			WHERE agent_id = ? AND image_id = ? AND failed_at IS NULL`, agentID, up.ImageID)
+	}
+	if err != nil {
 		return err
 	}
-	for _, q := range []string{`DELETE FROM sbom_requests WHERE image_id = ?`, `DELETE FROM scans WHERE image_id = ?`} {
-		if _, err := tx.ExecContext(ctx, q, up.ImageID); err != nil {
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n != 1 {
+		return ErrUnsolicited
+	}
+	if up.Error == "" {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO sboms (agent_id, image_id, format, generator, size_bytes, document, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(agent_id, image_id) DO UPDATE SET format = excluded.format, generator = excluded.generator,
+				size_bytes = excluded.size_bytes, document = excluded.document, created_at = excluded.created_at`,
+			agentID, up.ImageID, up.Format, up.Generator, len(up.Document), doc, now.Unix()); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM scans WHERE agent_id = ? AND image_id = ?`, agentID, up.ImageID); err != nil {
 			return err
 		}
 	}
 	return tx.Commit()
 }
 
-// LoadSBOM returns an image's SBOM document.
-func (s *Store) LoadSBOM(ctx context.Context, imageID string) ([]byte, error) {
+// SBOMKey identifies one agent's SBOM of one image.
+type SBOMKey struct {
+	AgentID, ImageID string
+}
+
+// LoadSBOM returns an SBOM document.
+func (s *Store) LoadSBOM(ctx context.Context, key SBOMKey) ([]byte, error) {
 	var blob []byte
-	err := s.db.QueryRowContext(ctx, `SELECT document FROM sboms WHERE image_id = ?`, imageID).Scan(&blob)
+	err := s.db.QueryRowContext(ctx, `SELECT document FROM sboms WHERE agent_id = ? AND image_id = ?`,
+		key.AgentID, key.ImageID).Scan(&blob)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -193,26 +261,27 @@ func (s *Store) LoadSBOM(ctx context.Context, imageID string) ([]byte, error) {
 	return doc, errors.Join(err, zr.Close())
 }
 
-// SBOMsToScan returns images with an SBOM but no scan against dbVersion,
-// preferring images that have never been scanned.
-func (s *Store) SBOMsToScan(ctx context.Context, dbVersion string, limit int) ([]string, error) {
+// SBOMsToScan returns SBOMs with no scan against dbVersion, preferring ones
+// never scanned.
+func (s *Store) SBOMsToScan(ctx context.Context, dbVersion string, limit int) ([]SBOMKey, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT b.image_id FROM sboms b LEFT JOIN scans sc ON sc.image_id = b.image_id
+		SELECT b.agent_id, b.image_id FROM sboms b
+		LEFT JOIN scans sc ON sc.agent_id = b.agent_id AND sc.image_id = b.image_id
 		WHERE sc.image_id IS NULL OR sc.db_version != ?
 		ORDER BY sc.image_id IS NOT NULL, b.created_at LIMIT ?`, dbVersion, limit)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = rows.Close() }()
-	var ids []string
+	var keys []SBOMKey
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var k SBOMKey
+		if err := rows.Scan(&k.AgentID, &k.ImageID); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		keys = append(keys, k)
 	}
-	return ids, rows.Err()
+	return keys, rows.Err()
 }
 
 // Finding is one vulnerability in one package of one image.
@@ -232,27 +301,27 @@ func (f Finding) Fixable() bool { return f.Fixed != "" }
 
 // SaveScan replaces an image's findings with the result of matching its SBOM
 // against dbVersion. A non-empty scanErr records a failed match instead.
-func (s *Store) SaveScan(ctx context.Context, imageID, dbVersion string, findings []Finding, scanErr string, now time.Time) error {
+func (s *Store) SaveScan(ctx context.Context, key SBOMKey, dbVersion string, findings []Finding, scanErr string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO scans (image_id, db_version, scanned_at, error) VALUES (?, ?, ?, ?)
-		ON CONFLICT(image_id) DO UPDATE SET db_version = excluded.db_version, scanned_at = excluded.scanned_at, error = excluded.error`,
-		imageID, dbVersion, now.Unix(), truncate(scanErr, 2000)); err != nil {
+		INSERT INTO scans (agent_id, image_id, db_version, scanned_at, error) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(agent_id, image_id) DO UPDATE SET db_version = excluded.db_version, scanned_at = excluded.scanned_at, error = excluded.error`,
+		key.AgentID, key.ImageID, dbVersion, now.Unix(), truncate(scanErr, 2000)); err != nil {
 		return err
 	}
 	if scanErr == "" {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM findings WHERE image_id = ?`, imageID); err != nil {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM findings WHERE agent_id = ? AND image_id = ?`, key.AgentID, key.ImageID); err != nil {
 			return err
 		}
 		for _, f := range findings {
 			if _, err := tx.ExecContext(ctx, `
-				INSERT OR IGNORE INTO findings (image_id, vuln_id, pkg, installed, fixed, status, severity, title, url)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				imageID, f.VulnID, f.Pkg, f.Installed, f.Fixed, f.Status, f.Severity, truncate(f.Title, 300), f.URL); err != nil {
+				INSERT OR IGNORE INTO findings (agent_id, image_id, vuln_id, pkg, installed, fixed, status, severity, title, url)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				key.AgentID, key.ImageID, f.VulnID, f.Pkg, f.Installed, f.Fixed, f.Status, f.Severity, truncate(f.Title, 300), f.URL); err != nil {
 				return err
 			}
 		}
@@ -288,7 +357,7 @@ func (s *Store) ActiveFindings(ctx context.Context, host string, now time.Time) 
 		SELECT a.name, c.name, c.image, c.image_id, f.vuln_id, f.pkg, f.installed, f.fixed, f.status, f.severity, f.title, f.url
 		FROM containers c
 		JOIN agents a ON a.id = c.agent_id AND a.revoked_at IS NULL
-		JOIN findings f ON f.image_id = c.image_id
+		JOIN findings f ON f.agent_id = c.agent_id AND f.image_id = c.image_id
 		WHERE (? = '' OR a.name = ?)
 		ORDER BY a.name, c.name, f.severity, f.vuln_id`, host, host)
 	if err != nil {
@@ -317,8 +386,8 @@ func (s *Store) Coverage(ctx context.Context) (map[string]ScanCoverage, error) {
 			(r.failed_at IS NOT NULL) OR (sc.image_id IS NOT NULL AND sc.error != '')
 		FROM containers c
 		JOIN agents a ON a.id = c.agent_id AND a.revoked_at IS NULL
-		LEFT JOIN scans sc ON sc.image_id = c.image_id
-		LEFT JOIN sbom_requests r ON r.image_id = c.image_id`)
+		LEFT JOIN scans sc ON sc.agent_id = c.agent_id AND sc.image_id = c.image_id
+		LEFT JOIN sbom_requests r ON r.agent_id = c.agent_id AND r.image_id = c.image_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -472,6 +541,24 @@ func (s *Store) MarkAlerted(ctx context.Context, keys []AlertKey, now time.Time)
 		}
 	}
 	return tx.Commit()
+}
+
+// ClearSuppressedAlerts forgets alerts for findings that an active ignore
+// rule now covers, so they alert again if they are still present when the
+// rule expires.
+func (s *Store) ClearSuppressedAlerts(ctx context.Context, now time.Time) error {
+	rules, err := s.Ignores(ctx, now)
+	if err != nil {
+		return err
+	}
+	for _, r := range rules {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM vuln_alerts
+			WHERE vuln_id = ? AND (? = '' OR pkg = ?) AND (? = '' OR repository = ?)`,
+			r.VulnID, r.Pkg, r.Pkg, r.Repository, r.Repository); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // Setting returns a stored setting, or "" when unset.

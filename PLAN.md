@@ -89,11 +89,15 @@ The agent inventories each image; the server finds the vulnerabilities. The
 split keeps the vulnerability database in one place and lets the server
 rescan the whole fleet without touching any host.
 
-### On the agent: one SBOM per digest
+### On the agent: one SBOM per image, per host
 
-1. When a container runs an image digest the server has no SBOM for, the
-   server asks the agent for one on the next check-in. The same digest on
-   several hosts is inventoried once.
+1. When a container runs an image the server has no SBOM for from that
+   agent, the server asks the agent for one on the next check-in. SBOMs are
+   keyed by agent and image: an agent's SBOM is trusted only for its own
+   containers, and uploads must answer an outstanding request to that agent,
+   which they consume. A security review found that sharing one SBOM across
+   hosts let any enrolled agent overwrite another host's results; at this
+   fleet size, re-inventorying shared images per host is the cheaper fix.
 2. The agent runs Trivy in a short-lived container against the local image
    and produces a CycloneDX SBOM (`trivy image --format cyclonedx`). Nothing
    is pulled or exported off the host.

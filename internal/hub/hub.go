@@ -280,7 +280,11 @@ func (h *Hub) sbom(w http.ResponseWriter, r *http.Request) {
 		h.fail(w, http.StatusBadRequest, errors.New("expected a cyclonedx-json document or an error"))
 		return
 	}
-	if err := h.store.SaveSBOM(r.Context(), agent.ID, up, time.Now()); err != nil {
+	if err := h.store.SaveSBOM(r.Context(), agent.ID, up, time.Now()); errors.Is(err, store.ErrUnsolicited) {
+		h.logger.Warn("unsolicited sbom rejected", "agent", agent.Name, "image_id", up.ImageID, "remote", r.RemoteAddr)
+		h.fail(w, http.StatusConflict, err)
+		return
+	} else if err != nil {
 		h.logger.Error("save sbom", "agent", agent.Name, "err", err)
 		h.fail(w, http.StatusInternalServerError, errors.New("could not save sbom"))
 		return

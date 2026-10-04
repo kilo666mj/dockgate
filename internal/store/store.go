@@ -96,8 +96,11 @@ func Open(path string) (*Store, error) {
 	// One connection serialises writers and keeps pragmas consistent; the
 	// server's load is a handful of agents reporting every minute.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema + schemaVulns); err != nil {
+	if _, err := db.Exec(schema); err != nil {
 		return nil, errors.Join(fmt.Errorf("apply schema: %w", err), db.Close())
+	}
+	if err := migrateVulns(db); err != nil {
+		return nil, errors.Join(fmt.Errorf("apply vulnerability schema: %w", err), db.Close())
 	}
 	return &Store{db: db}, nil
 }

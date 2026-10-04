@@ -50,11 +50,14 @@ func TestBuildChecks(t *testing.T) {
 	if err := st.SaveReport(ctx, "agt_charlie", protocol.Report{}, now.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	// A fixable critical in alpha's db image makes its vulnerability check bad.
+	// A fixable critical in alpha's db image makes its vulnerability check warn.
+	if _, err := st.RequestSBOMs(ctx, "agt_alpha", 5, store.AgentQueue{}, now); err != nil {
+		t.Fatal(err)
+	}
 	if err := st.SaveSBOM(ctx, "agt_alpha", protocol.SBOMUpload{ImageID: "sha256:db", Format: protocol.FormatCycloneDXJSON, Document: []byte(`{}`)}, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.SaveScan(ctx, "sha256:db", "db1", []store.Finding{{VulnID: "CVE-1", Pkg: "libssl3", Installed: "3.0", Fixed: "3.1", Severity: "CRITICAL"}}, "", now); err != nil {
+	if err := st.SaveScan(ctx, store.SBOMKey{AgentID: "agt_alpha", ImageID: "sha256:db"}, "db1", []store.Finding{{VulnID: "CVE-1", Pkg: "libssl3", Installed: "3.0", Fixed: "3.1", Severity: "CRITICAL"}}, "", now); err != nil {
 		t.Fatal(err)
 	}
 
@@ -118,5 +121,28 @@ func TestExportOncePostsWithToken(t *testing.T) {
 	}
 	if len(posted) != 1 || posted[0].Source != Source || posted[0].Host != "alpha" {
 		t.Errorf("posted = %+v", posted)
+	}
+}
+
+func TestVulnCheckCoverage(t *testing.T) {
+	a := store.Agent{Name: "alpha"}
+	cases := []struct {
+		name string
+		cov  store.ScanCoverage
+		want string
+	}{
+		{"nothing scanned looks unknown, not clean", store.ScanCoverage{Containers: 3, Pending: 3}, "unknown"},
+		{"partly scanned warns", store.ScanCoverage{Containers: 3, Scanned: 2, Pending: 1}, "warn"},
+		{"failed scan warns", store.ScanCoverage{Containers: 2, Scanned: 1, Failed: 1}, "warn"},
+		{"fully scanned and clean is ok", store.ScanCoverage{Containers: 2, Scanned: 2}, "ok"},
+		{"no containers is ok", store.ScanCoverage{}, "ok"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := vulnCheck(a, nil, tc.cov, "now")
+			if c.Status != tc.want {
+				t.Fatalf("status = %s (%s), want %s", c.Status, c.Summary, tc.want)
+			}
+		})
 	}
 }
