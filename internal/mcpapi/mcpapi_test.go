@@ -112,8 +112,8 @@ func TestTools(t *testing.T) {
 			t.Errorf("tool %s lacks the dockgate_ prefix", tool.Name)
 		}
 	}
-	if len(tools.Tools) != 7 {
-		t.Errorf("tools = %d, want 7", len(tools.Tools))
+	if len(tools.Tools) != 8 {
+		t.Errorf("tools = %d, want 8", len(tools.Tools))
 	}
 
 	var fleet fleetStatusOutput
@@ -162,6 +162,12 @@ func TestTools(t *testing.T) {
 	call(t, session, "dockgate_scan_failures", nil, &failures)
 	if len(failures.Failures) != 1 || failures.Failures[0].Container != "web" || failures.Failures[0].Stage != "sbom" {
 		t.Fatalf("scan failures = %+v", failures)
+	}
+
+	var impact updateImpactOutput
+	call(t, session, "dockgate_update_impact", nil, &impact)
+	if len(impact.Updates) != 1 || impact.Updates[0].Container != "db" || impact.Updates[0].Status != "pending" {
+		t.Fatalf("update impact = %+v, want db pending its candidate scan", impact)
 	}
 
 	var ig ignoresOutput

@@ -43,6 +43,14 @@ UI yet.
 - The vulnerability check reports `unknown` until a host's images are
   scanned, and `warn` while only some are, so a stalled or disabled scanner
   never looks like a clean host.
+- The server also inventories images straight from their registries, with
+  network access the agents' scanner does not have. For every available
+  update it scans the candidate image (the new digest, for the host's
+  platform) and compares critical and high findings with the running image:
+  an update is *actionable* when it fixes some without introducing a new
+  critical one. When an agent cannot inventory an image (for example one
+  whose JAR files need Trivy's Java database), the server inventories the
+  same digest from the registry instead.
 - Alerts go out once per repository, vulnerability and package when a
   fixable finding at an alerting severity (default critical and high) first
   appears. The first run records existing findings as a baseline and sends
@@ -108,6 +116,7 @@ serves read-only MCP tools over Streamable HTTP at `/mcp`:
 | `dockgate_vulnerabilities` | findings after ignore rules (default: fixable critical and high), with a limit |
 | `dockgate_find_vulnerability` | which hosts and containers have a given CVE |
 | `dockgate_ignores_list` | active ignore rules |
+| `dockgate_update_impact` | for each available update: critical/high findings it fixes and introduces, and whether it is actionable |
 | `dockgate_scan_failures` | containers whose image could not be inventoried or matched |
 
 Every request needs `Authorization: Bearer <token>`. The listener is meant for

@@ -106,7 +106,7 @@ func migrateVulns(db *sql.DB) error {
 			}
 		}
 	}
-	if _, err := db.Exec(schemaVulns); err != nil {
+	if _, err := db.Exec(schemaVulns + schemaRegistry); err != nil {
 		return err
 	}
 	_, err = db.Exec(`INSERT INTO settings (key, value) VALUES ('schema_vulns', ?)

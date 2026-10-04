@@ -68,6 +68,11 @@ func NewServer(st *store.Store, version string, logger *slog.Logger) *mcp.Server
 		Annotations: mcpkit.ReadOnly(false),
 	}, t.ignoresList)
 	mcp.AddTool(server, &mcp.Tool{
+		Name:        "dockgate_update_impact",
+		Description: "For containers with an available image update, compare critical/high findings in the current image with the update candidate (scanned from the registry): what the update fixes, what it introduces, and whether it is actionable.",
+		Annotations: mcpkit.ReadOnly(false),
+	}, t.updateImpact)
+	mcp.AddTool(server, &mcp.Tool{
 		Name:        "dockgate_scan_failures",
 		Description: "List containers whose image could not be inventoried or matched, with the error, so their vulnerability status is unknown.",
 		Annotations: mcpkit.ReadOnly(false),
@@ -545,4 +550,33 @@ func nonNil[T any](s []T) []T {
 		return []T{}
 	}
 	return s
+}
+
+type updateImpactInput struct {
+	Host           string `json:"host,omitempty" jsonschema:"optional agent name; omit for every host"`
+	ActionableOnly bool   `json:"actionable_only,omitempty" jsonschema:"only updates that fix critical/high findings without introducing a new critical one"`
+}
+
+type updateImpactOutput struct {
+	Updates []store.UpdateImpact `json:"updates"`
+}
+
+func (t *tools) updateImpact(ctx context.Context, _ *mcp.CallToolRequest, in updateImpactInput) (*mcp.CallToolResult, updateImpactOutput, error) {
+	if in.Host != "" {
+		if _, err := t.agent(ctx, in.Host); err != nil {
+			return nil, updateImpactOutput{}, err
+		}
+	}
+	all, err := t.store.UpdateImpacts(ctx, in.Host, t.now())
+	if err != nil {
+		return nil, updateImpactOutput{}, err
+	}
+	out := updateImpactOutput{Updates: []store.UpdateImpact{}}
+	for _, u := range all {
+		if in.ActionableOnly && !u.Actionable {
+			continue
+		}
+		out.Updates = append(out.Updates, u)
+	}
+	return nil, out, nil
 }

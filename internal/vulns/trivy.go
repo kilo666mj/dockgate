@@ -26,7 +26,7 @@ type Trivy struct {
 func (t *Trivy) command(ctx context.Context, args ...string) *exec.Cmd {
 	args = append(args, "--cache-dir", t.CacheDir, "--quiet")
 	cmd := exec.CommandContext(ctx, t.Binary, args...)
-	cmd.Env = []string{"HOME=" + t.CacheDir, "PATH=/usr/local/bin:/usr/bin:/bin", "TRIVY_NO_PROGRESS=true"}
+	cmd.Env = []string{"HOME=" + t.CacheDir, "TMPDIR=" + t.CacheDir, "PATH=/usr/local/bin:/usr/bin:/bin", "TRIVY_NO_PROGRESS=true"}
 	return cmd
 }
 
@@ -43,13 +43,47 @@ func run(cmd *exec.Cmd) ([]byte, error) {
 	return stdout.Bytes(), nil
 }
 
-// RefreshDB downloads the vulnerability database if a newer one exists.
+// RefreshDB downloads the vulnerability database, and the Java database
+// that identifies JAR files in registry SBOMs, if newer ones exist.
 func (t *Trivy) RefreshDB(ctx context.Context) error {
 	if err := os.MkdirAll(t.CacheDir, 0o700); err != nil {
 		return err
 	}
-	_, err := run(t.command(ctx, "image", "--download-db-only"))
+	if _, err := run(t.command(ctx, "image", "--download-db-only")); err != nil {
+		return err
+	}
+	_, err := run(t.command(ctx, "image", "--download-java-db-only"))
 	return err
+}
+
+// Generator names the tool behind server-made registry SBOMs.
+const Generator = "registry: trivy 0.74.0"
+
+// RemoteSBOM inventories an image straight from its registry for one
+// platform (os/arch). ref should be pinned by digest. Registries are reached
+// anonymously.
+func (t *Trivy) RemoteSBOM(ctx context.Context, ref, platform string) ([]byte, error) {
+	if !strings.Contains(ref, "@sha256:") {
+		return nil, fmt.Errorf("refusing unpinned reference %q", ref)
+	}
+	dir, err := os.MkdirTemp(t.CacheDir, "remote-")
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	out := filepath.Join(dir, "sbom.cdx.json")
+	if _, err := run(t.command(ctx, "image", "--image-src", "remote", "--platform", platform,
+		"--format", "cyclonedx", "--skip-db-update", "--skip-java-db-update", "--output", out, ref)); err != nil {
+		return nil, err
+	}
+	doc, err := os.ReadFile(out)
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(doc) {
+		return nil, errors.New("registry SBOM is not JSON")
+	}
+	return doc, nil
 }
 
 // DBVersion identifies the local database by its build time. It changes

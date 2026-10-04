@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,9 +16,11 @@ import (
 )
 
 type fakeMatcher struct {
-	version  string
-	findings []store.Finding
-	matched  int
+	version   string
+	findings  []store.Finding
+	matched   int
+	remote    []string
+	remoteErr error
 }
 
 func (f *fakeMatcher) RefreshDB(context.Context) error { return nil }
@@ -27,6 +30,13 @@ func (f *fakeMatcher) DBVersion(context.Context) (string, error) {
 func (f *fakeMatcher) Match(context.Context, []byte) ([]store.Finding, error) {
 	f.matched++
 	return f.findings, nil
+}
+func (f *fakeMatcher) RemoteSBOM(_ context.Context, ref, platform string) ([]byte, error) {
+	f.remote = append(f.remote, platform+" "+ref)
+	if f.remoteErr != nil {
+		return nil, f.remoteErr
+	}
+	return []byte(`{"bomFormat":"CycloneDX"}`), nil
 }
 
 type fakePublisher struct{ cards []tintwire.Card }
@@ -181,5 +191,30 @@ func TestExpiredIgnoreAlertsAgainWithoutNewScans(t *testing.T) {
 	a.Check(ctx)
 	if len(pub.cards) != 2 {
 		t.Fatalf("expired ignore did not re-alert: %d cards", len(pub.cards))
+	}
+}
+
+func TestRegistryPass(t *testing.T) {
+	st, agentID := setup(t)
+	ctx := context.Background()
+	digest := "sha256:" + strings.Repeat("3", 64)
+	if err := st.SaveReport(ctx, agentID, protocol.Report{
+		Docker: protocol.DockerInfo{OS: "linux", Arch: "arm64"},
+		Containers: []protocol.Container{{ID: "c1", Name: "db", Image: "postgres:16", ImageID: "sha256:pg",
+			Update: &protocol.UpdateCheck{Status: protocol.UpdateAvailable, Reference: "postgres:16", RemoteDigest: digest}}},
+	}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	m := &fakeMatcher{version: "db1"}
+	s := &Scanner{Store: st, Matcher: m, Logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	n, err := s.RegistryPass(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 || len(m.remote) != 1 || m.remote[0] != "linux/arm64 postgres@"+digest {
+		t.Fatalf("registry pass stored %d, remote calls %v; want the candidate inventoried and matched for arm64", n, m.remote)
+	}
+	if n, _ := s.RegistryPass(ctx); n != 0 {
+		t.Fatalf("second pass stored %d, want nothing new", n)
 	}
 }
