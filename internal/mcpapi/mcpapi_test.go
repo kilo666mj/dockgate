@@ -130,7 +130,8 @@ func TestTools(t *testing.T) {
 
 	var hc hostContainersOutput
 	call(t, session, "dockgate_host_containers", map[string]any{"host": "alpha"}, &hc)
-	if len(hc.Containers) != 2 || hc.Containers[0].ComposeWorkDir != "/opt/app" || hc.Containers[0].FixableCritical != 1 {
+	if len(hc.Containers) != 2 || hc.Containers[0].ComposeWorkDir != "/opt/app" || hc.Containers[0].FixableCritical != 1 ||
+		hc.Containers[0].Scan != "scanned" || hc.Containers[1].Scan != "failed" {
 		t.Fatalf("alpha containers = %+v", hc.Containers)
 	}
 	if res := call(t, session, "dockgate_host_containers", map[string]any{"host": "nope"}, nil); !res.IsError {

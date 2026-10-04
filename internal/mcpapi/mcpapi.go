@@ -259,6 +259,9 @@ type containerInfo struct {
 	Update          *protocol.UpdateCheck `json:"update,omitempty"`
 	FixableCritical int                   `json:"fixable_critical"`
 	FixableHigh     int                   `json:"fixable_high"`
+	// Scan is the image's vulnerability scan state; fixable counts mean
+	// nothing until it is "scanned".
+	Scan string `json:"scan" jsonschema:"scanned, pending or failed"`
 }
 
 type hostContainersOutput struct {
@@ -301,13 +304,17 @@ func (t *tools) hostContainers(ctx context.Context, _ *mcp.CallToolRequest, in h
 		}
 		per[f.Container] = c
 	}
+	scans, err := t.store.ContainerScanStates(ctx, a.ID)
+	if err != nil {
+		return nil, hostContainersOutput{}, err
+	}
 	out := hostContainersOutput{Host: a.Name, Containers: []containerInfo{}}
 	for _, c := range containers {
 		ci := containerInfo{
 			Name: c.Name, Image: c.Image, ImageID: c.ImageID, State: c.State, Status: c.Status, Health: c.Health,
 			RestartCount: c.RestartCount, ComposeProject: c.ComposeProject, ComposeService: c.ComposeService,
 			ComposeWorkDir: c.Labels[labelComposeWorkDir], Update: c.Update,
-			FixableCritical: per[c.Name].crit, FixableHigh: per[c.Name].high,
+			FixableCritical: per[c.Name].crit, FixableHigh: per[c.Name].high, Scan: scans[c.ID],
 		}
 		if !c.StartedAt.IsZero() {
 			ci.StartedAt = c.StartedAt.UTC().Format(time.RFC3339)

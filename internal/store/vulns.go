@@ -414,6 +414,41 @@ func (s *Store) Coverage(ctx context.Context) (map[string]ScanCoverage, error) {
 	return out, rows.Err()
 }
 
+// ContainerScanStates returns, per container ID on one agent, whether its
+// image is "scanned", "failed" or still "pending", the same way Coverage
+// counts them.
+func (s *Store) ContainerScanStates(ctx context.Context, agentID string) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT c.id,
+			sc.image_id IS NOT NULL AND sc.error = '',
+			(r.failed_at IS NOT NULL) OR (sc.image_id IS NOT NULL AND sc.error != '')
+		FROM containers c
+		LEFT JOIN scans sc ON sc.agent_id = c.agent_id AND sc.image_id = c.image_id
+		LEFT JOIN sbom_requests r ON r.agent_id = c.agent_id AND r.image_id = c.image_id
+		WHERE c.agent_id = ?`, agentID)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	out := map[string]string{}
+	for rows.Next() {
+		var id string
+		var scanned, failed bool
+		if err := rows.Scan(&id, &scanned, &failed); err != nil {
+			return nil, err
+		}
+		switch {
+		case scanned:
+			out[id] = "scanned"
+		case failed:
+			out[id] = "failed"
+		default:
+			out[id] = "pending"
+		}
+	}
+	return out, rows.Err()
+}
+
 // ScanFailure is a container whose image could not be inventoried or
 // matched.
 type ScanFailure struct {
