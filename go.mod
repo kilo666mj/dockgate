@@ -6,6 +6,7 @@ require (
 	github.com/google/go-containerregistry v0.22.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	go.michaelspost.com/mcpkit v0.2.0
+	go.michaelspost.com/oidcrp v0.3.0
 	go.michaelspost.com/tintwire-go v0.4.0
 	modernc.org/sqlite v1.60.1
 )
@@ -28,7 +29,6 @@ require (
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	go.michaelspost.com/oidcrp v0.3.0 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
