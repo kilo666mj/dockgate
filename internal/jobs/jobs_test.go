@@ -105,7 +105,7 @@ func TestRequestGatesAndRecordsPendingJob(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if job.State != store.JobPendingApproval || job.Digest != newDigest || job.Reference != "example/web:latest" || job.ContainerID != "c1" {
+	if job.CreatedAt.IsZero() || job.State != store.JobPendingApproval || job.Digest != newDigest || job.Reference != "example/web:latest" || job.ContainerID != "c1" {
 		t.Fatalf("job = %+v", job)
 	}
 	if len(job.Gate.Fixes) != 1 || len(job.Gate.Introduces) != 1 || !job.Gate.Hold {

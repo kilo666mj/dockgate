@@ -98,7 +98,8 @@ func (s *Service) RequestUpdate(ctx context.Context, r Request) (store.Job, erro
 	job := store.Job{
 		ID: newJobID(), Kind: protocol.JobUpdate, AgentID: agent.ID, Host: agent.Name, ContainerID: ctr.ID,
 		ContainerName: ctr.Name, Reference: ctr.Image, Reason: r.Reason, TaskID: r.TaskID, RequestedBy: r.Actor,
-		Gate: store.Gate{Fixes: []store.ImpactFinding{}, Introduces: []store.ImpactFinding{}},
+		Gate:      store.Gate{Fixes: []store.ImpactFinding{}, Introduces: []store.ImpactFinding{}},
+		CreatedAt: now.Truncate(time.Second), UpdatedAt: now.Truncate(time.Second),
 	}
 	deny := func(reason string) (store.Job, error) {
 		job.State, job.Gate.Denial = store.JobDenied, reason
