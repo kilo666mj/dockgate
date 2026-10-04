@@ -10,6 +10,7 @@
           - dockgate_agent_hosts | length > 0
           - dockgate_fleetglass_url | length == 0 or dockgate_fleetglass_token | length > 0
           - dockgate_tintwire_url | length == 0 or dockgate_tintwire_token | length > 0
+          - dockgate_taskboard_url | length == 0 or dockgate_taskboard_token | length > 0
         fail_msg: >-
           Set dockgate_agent_hosts (names agents use to reach the server) and,
           when dockgate_fleetglass_url is set, dockgate_fleetglass_token.

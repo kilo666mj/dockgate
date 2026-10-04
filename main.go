@@ -30,6 +30,7 @@ import (
 	"go.michaelspost.com/dockgate/internal/protocol"
 	"go.michaelspost.com/dockgate/internal/server"
 	"go.michaelspost.com/dockgate/internal/store"
+	"go.michaelspost.com/dockgate/internal/tasks"
 	"go.michaelspost.com/dockgate/internal/updates"
 	"go.michaelspost.com/dockgate/internal/vulns"
 
@@ -145,6 +146,11 @@ func serverRun(args []string) error {
 	twURL := fs.String("tintwire-url", os.Getenv("DOCKGATE_TINTWIRE_URL"), "Tintwire origin for vulnerability alerts; empty disables alerts (token from DOCKGATE_TINTWIRE_TOKEN)")
 	twChannel := fs.String("tintwire-channel", os.Getenv("DOCKGATE_TINTWIRE_CHANNEL"), "Tintwire channel for alerts; empty uses the token's own channel (required for hook tokens)")
 	alertSev := fs.String("alert-severities", envOr("DOCKGATE_ALERT_SEVERITIES", "CRITICAL,HIGH"), "severities of new fixable findings that alert")
+	tbURL := fs.String("taskboard-url", os.Getenv("DOCKGATE_TASKBOARD_URL"), "Taskboard MCP endpoint for filing actionable-update tasks, e.g. https://taskboard.example.net/mcp; empty disables it (token from DOCKGATE_TASKBOARD_TOKEN)")
+	tbMaxOpen := fs.Int("taskboard-max-open", envInt("DOCKGATE_TASKBOARD_MAX_OPEN", 5), "maximum open update tasks dockgate keeps filed")
+	tbRequirements := fs.String("taskboard-requirements", envOr("DOCKGATE_TASKBOARD_REQUIREMENTS", "runner:local"), "comma-separated requirement tokens routing the tasks")
+	tbProject := fs.String("taskboard-project", envOr("DOCKGATE_TASKBOARD_PROJECT", "dockgate"), "Taskboard project for the tasks")
+	ownPrefixes := fs.String("own-image-prefixes", os.Getenv("DOCKGATE_OWN_IMAGE_PREFIXES"), "comma-separated image reference prefixes built from your own repositories (fixed by pull request instead of pull and recreate)")
 	mcpListen := fs.String("mcp-listen", os.Getenv("DOCKGATE_MCP_LISTEN"), "MCP (Streamable HTTP) listen address for agents via a TLS proxy, e.g. 127.0.0.1:8098; empty disables it")
 	mcpTokenFile := fs.String("mcp-token-file", os.Getenv("DOCKGATE_MCP_TOKEN_FILE"), "file holding the MCP bearer token (required with -mcp-listen)")
 	logLevel := fs.String("log-level", envOr("DOCKGATE_LOG_LEVEL", "info"), "log level")
@@ -192,6 +198,19 @@ func serverRun(args []string) error {
 			StaleAfter: 5 * *reportInterval,
 		}
 		go exp.Run(ctx, *fgInterval)
+	}
+
+	if *tbURL != "" {
+		token := os.Getenv("DOCKGATE_TASKBOARD_TOKEN")
+		if token == "" {
+			return errors.New("DOCKGATE_TASKBOARD_TOKEN is required with -taskboard-url")
+		}
+		syncer := &tasks.Syncer{
+			Store: st, Logger: logger, MaxOpen: *tbMaxOpen, Requirements: splitList(*tbRequirements),
+			Project: *tbProject, OwnImagePrefixes: splitList(*ownPrefixes),
+			API: &tasks.Client{Endpoint: *tbURL, Token: token, Version: version},
+		}
+		go syncer.Run(ctx, 10*time.Minute)
 	}
 
 	health := newHTTPServer(*listen, server.New(logger, version).Handler())
@@ -534,6 +553,15 @@ func splitList(s string) []string {
 func envOr(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+func envInt(key string, fallback int) int {
+	if v := os.Getenv(key); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			return n
+		}
 	}
 	return fallback
 }

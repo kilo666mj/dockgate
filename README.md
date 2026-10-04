@@ -103,6 +103,24 @@ The agent keeps its key and certificates in `-state-dir`
 (default `/var/lib/dockgate-agent`). It needs access to the Docker socket,
 which is equivalent to root on the host.
 
+## Taskboard tasks for actionable updates
+
+With `-taskboard-url` (and a dedicated agent credential in
+`DOCKGATE_TASKBOARD_TOKEN`), the server files one Taskboard task per host and
+container whose update is actionable, most critical fixes first, up to
+`-taskboard-max-open` (default 5). Tasks are agent-lane work routed by
+`-taskboard-requirements` (default `runner:local`), with the impact, digests
+and fix policy in the summary and a four-step checklist: re-check, propose and
+ask for approval, apply, verify. Images matching `-own-image-prefixes` are
+fixed by pull request rather than pull and recreate.
+
+While a task is unclaimed dockgate refreshes it when the candidate image
+changes and cancels it with a "Resolved" note when the update stops being
+needed. Once an agent claims it, dockgate only reads it. A task a person or
+worker closed is not refiled until a newer image appears. This needs a
+Taskboard that lets producers maintain their unclaimed tasks, and the
+credential's policy must allow the requirement token and `task:sensitive`.
+
 ## MCP for agents
 
 `dockgate server run -mcp-listen 127.0.0.1:8098 -mcp-token-file /etc/dockgate/mcp.token`

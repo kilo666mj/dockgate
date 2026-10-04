@@ -47,3 +47,13 @@ dockgate_alert_severities: "CRITICAL,HIGH"
 # generated on the host on first deploy; Switchboard copies it from there.
 dockgate_mcp_listen: ""
 dockgate_mcp_token_file: "{{ dockgate_config_dir }}/mcp.token"
+
+# Taskboard: file one task per actionable container update for agents to
+# pick up. Leave the URL empty to disable. Put dockgate_taskboard_token (a
+# dedicated agent credential) in group_vars/dockgate/secret.yml (Vault).
+dockgate_taskboard_url: ""
+dockgate_taskboard_token: ""
+dockgate_taskboard_max_open: 5
+dockgate_taskboard_requirements: "runner:local"
+# Image reference prefixes built from your own repositories.
+dockgate_own_image_prefixes: []
