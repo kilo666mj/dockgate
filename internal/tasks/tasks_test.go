@@ -2,6 +2,7 @@ package tasks
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
@@ -250,5 +251,28 @@ func TestClientAgainstMCPServer(t *testing.T) {
 	task, err = c.Cancel(context.Background(), "01TASK", 1, "Resolved")
 	if err != nil || task.Status != "cancelled" {
 		t.Fatalf("cancel = %+v, %v", task, err)
+	}
+}
+
+func TestSummaryCarriesMetadataAndSkipsBuildx(t *testing.T) {
+	st, _ := fixture(t, "db", "buildx_buildkit_builder0")
+	api := newFake()
+	s := syncer(st, api)
+	if err := s.Sync(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.created) != 1 || api.created[0].Title != "Update db on alpha" {
+		t.Fatalf("created = %+v, want only db (buildx builders are exempt)", api.created)
+	}
+	var meta taskMeta
+	for _, line := range strings.Split(api.created[0].Summary, "\n") {
+		if rest, ok := strings.CutPrefix(line, MetaPrefix); ok {
+			if err := json.Unmarshal([]byte(rest), &meta); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if meta.Version != 1 || meta.Host != "alpha" || meta.Container != "db" || meta.Digest != newDigest || meta.Fix != "update_job" || meta.Image != "example/db:latest" {
+		t.Fatalf("meta = %+v", meta)
 	}
 }

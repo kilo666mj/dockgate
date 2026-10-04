@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -102,7 +103,7 @@ func (s *Syncer) Sync(ctx context.Context) error {
 	}
 	actionable := map[string]store.UpdateImpact{}
 	for _, u := range impacts {
-		if u.Actionable {
+		if u.Actionable && store.UpdateExempt(u.Container) == "" {
 			actionable[key(u.Host, u.Container)] = u
 		}
 	}
@@ -216,9 +217,9 @@ func (s *Syncer) maintain(ctx context.Context, rec store.UpdateTask, u store.Upd
 }
 
 var checklist = []string{
-	"Re-check the impact with dockgate_update_impact",
-	"Propose the fix and ask for approval with a blocking escalation",
-	"Apply the approved fix",
+	"Re-check the impact and the release notes",
+	"Request the update job (own-repository images need a pull request instead)",
+	"Wait for approval in dockgate and the job result",
 	"Verify the findings cleared",
 }
 
@@ -256,8 +257,9 @@ func (s *Syncer) summary(u store.UpdateImpact) string {
 			"the operator approves in the dockgate web UI, then the host's agent recreates the container with the scanned image and rolls back if it does not come up. " +
 			"Follow it with dockgate_job_status. Do not run docker commands over SSH.\n\n")
 	}
-	b.WriteString("Before acting, re-check with dockgate_update_impact and dockgate_host_containers (compose project and working directory). " +
-		"Ask for approval with a blocking escalation before changing anything; for an update job, include the approval_url.\n\n")
+	b.WriteString("Before acting, re-check with dockgate_update_impact and dockgate_host_containers (compose project and working directory), " +
+		"and read the release notes between the current and candidate versions for breaking changes. " +
+		"The update job is the approval: nothing changes until the operator approves it in dockgate.\n\n")
 	if len(u.Fixes) > 0 {
 		b.WriteString("Fixes:\n")
 		writeFindings(&b, u.Fixes)
@@ -266,7 +268,24 @@ func (s *Syncer) summary(u store.UpdateImpact) string {
 		b.WriteString("\nIntroduces:\n")
 		writeFindings(&b, u.Introduces)
 	}
+	// A machine-readable line for workers, so they need not parse the prose.
+	meta, _ := json.Marshal(taskMeta{Version: 1, Host: u.Host, Container: u.Container, Image: u.Image,
+		Digest: u.RemoteDigest, Fix: map[bool]string{true: "pull_request", false: "update_job"}[s.ownImage(u.Image)]})
+	fmt.Fprintf(&b, "\n%s%s\n", MetaPrefix, meta)
 	return b.String()
+}
+
+// MetaPrefix starts the summary line carrying taskMeta as JSON.
+const MetaPrefix = "dockgate-task: "
+
+// taskMeta identifies the update a task is about.
+type taskMeta struct {
+	Version   int    `json:"version"`
+	Host      string `json:"host"`
+	Container string `json:"container"`
+	Image     string `json:"image"`
+	Digest    string `json:"digest"`
+	Fix       string `json:"fix"` // update_job or pull_request
 }
 
 func writeFindings(b *strings.Builder, fs []store.ImpactFinding) {

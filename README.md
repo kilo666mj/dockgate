@@ -154,9 +154,13 @@ With `-taskboard-url` (and a dedicated agent credential in
 container whose update is actionable, most critical fixes first, up to
 `-taskboard-max-open` (default 5). Tasks are agent-lane work routed by
 `-taskboard-requirements` (default `runner:local`), with the impact, digests
-and fix policy in the summary and a four-step checklist: re-check, propose and
-ask for approval, apply, verify. Images matching `-own-image-prefixes` are
-fixed by pull request rather than pull and recreate.
+and fix policy in the summary and a four-step checklist: re-check (including
+release notes), request the update job, wait for approval and the result,
+verify. Images matching `-own-image-prefixes` are fixed by pull request rather
+than pull and recreate. The summary ends with a `dockgate-task: {...}` JSON
+line (host, container, image, candidate digest, `fix` of `update_job` or
+`pull_request`) for workers. BuildKit builder containers that `docker buildx`
+runs (`buildx_buildkit_*`) are scanned but never get tasks or jobs.
 
 While a task is unclaimed dockgate refreshes it when the candidate image
 changes and cancels it with a "Resolved" note when the update stops being

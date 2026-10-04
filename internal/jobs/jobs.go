@@ -127,6 +127,9 @@ func (s *Service) RequestUpdate(ctx context.Context, r Request) (store.Job, erro
 			return deny("this image is built from your own repository; fix it with a pull request that rebuilds it")
 		}
 	}
+	if why := store.UpdateExempt(ctr.Name); why != "" {
+		return deny("not updated by jobs: " + why)
+	}
 	if ctr.Labels["dockgate.role"] != "" {
 		return deny("dockgate's own containers are not updated by jobs")
 	}

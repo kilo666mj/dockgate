@@ -150,6 +150,21 @@ func TestRequestDenials(t *testing.T) {
 	}
 }
 
+func TestRequestDeniesBuildxBuilders(t *testing.T) {
+	e := setup(t, true)
+	rep := protocol.Report{Docker: protocol.DockerInfo{OS: "linux", Arch: "amd64"}, Containers: []protocol.Container{{
+		ID: "b1", Name: "buildx_buildkit_builder0", Image: "moby/buildkit:buildx-stable-1", ImageID: "sha256:bk", State: "running",
+		Update: &protocol.UpdateCheck{Status: protocol.UpdateAvailable, Reference: "moby/buildkit:buildx-stable-1", RemoteDigest: newDigest},
+	}}}
+	if err := e.st.SaveReport(context.Background(), e.agent, rep, e.now); err != nil {
+		t.Fatal(err)
+	}
+	_, err := e.svc.RequestUpdate(context.Background(), Request{Host: "alpha", Container: "buildx_buildkit_builder0", Actor: "x"})
+	if !errors.Is(err, ErrDenied) || !strings.Contains(err.Error(), "buildx") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestApproveDispatchFinish(t *testing.T) {
 	e := setup(t, true)
 	ctx := context.Background()
