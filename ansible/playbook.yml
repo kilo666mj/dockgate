@@ -108,6 +108,18 @@
         mode: "0755"
       notify: Restart dockgate
 
+    - name: Generate the MCP bearer token once
+      ansible.builtin.shell: |
+        set -eu
+        umask 027
+        head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' > {{ dockgate_mcp_token_file }}
+        chgrp {{ dockgate_group }} {{ dockgate_mcp_token_file }}
+      args:
+        creates: "{{ dockgate_mcp_token_file }}"
+      when: dockgate_mcp_listen | length > 0
+      no_log: true
+      notify: Restart dockgate
+
     - name: Install environment
       # The file holds secrets; never show it in --diff output.
       diff: false

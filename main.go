@@ -25,6 +25,7 @@ import (
 	"go.michaelspost.com/dockgate/internal/docker"
 	"go.michaelspost.com/dockgate/internal/fleetglass"
 	"go.michaelspost.com/dockgate/internal/hub"
+	"go.michaelspost.com/dockgate/internal/mcpapi"
 	"go.michaelspost.com/dockgate/internal/pki"
 	"go.michaelspost.com/dockgate/internal/protocol"
 	"go.michaelspost.com/dockgate/internal/server"
@@ -144,6 +145,8 @@ func serverRun(args []string) error {
 	twURL := fs.String("tintwire-url", os.Getenv("DOCKGATE_TINTWIRE_URL"), "Tintwire origin for vulnerability alerts; empty disables alerts (token from DOCKGATE_TINTWIRE_TOKEN)")
 	twChannel := fs.String("tintwire-channel", os.Getenv("DOCKGATE_TINTWIRE_CHANNEL"), "Tintwire channel for alerts; empty uses the token's own channel (required for hook tokens)")
 	alertSev := fs.String("alert-severities", envOr("DOCKGATE_ALERT_SEVERITIES", "CRITICAL,HIGH"), "severities of new fixable findings that alert")
+	mcpListen := fs.String("mcp-listen", os.Getenv("DOCKGATE_MCP_LISTEN"), "MCP (Streamable HTTP) listen address for agents via a TLS proxy, e.g. 127.0.0.1:8098; empty disables it")
+	mcpTokenFile := fs.String("mcp-token-file", os.Getenv("DOCKGATE_MCP_TOKEN_FILE"), "file holding the MCP bearer token (required with -mcp-listen)")
 	logLevel := fs.String("log-level", envOr("DOCKGATE_LOG_LEVEL", "info"), "log level")
 	shutdownTimeout := fs.Duration("shutdown-timeout", 10*time.Second, "graceful shutdown timeout")
 	if err := fs.Parse(args); err != nil {
@@ -195,7 +198,22 @@ func serverRun(args []string) error {
 	agents := newHTTPServer(*agentListen, h.Handler())
 	agents.TLSConfig = h.TLSConfig()
 
-	errc := make(chan error, 2)
+	var mcpSrv *http.Server
+	if *mcpListen != "" {
+		token, err := os.ReadFile(*mcpTokenFile)
+		if err != nil {
+			return fmt.Errorf("MCP token: %w", err)
+		}
+		handler, err := mcpapi.Handler(mcpapi.NewServer(st, version, logger), strings.TrimSpace(string(token)), logger)
+		if err != nil {
+			return err
+		}
+		mux := http.NewServeMux()
+		mux.Handle("/mcp", handler)
+		mcpSrv = newHTTPServer(*mcpListen, mux)
+	}
+
+	errc := make(chan error, 3)
 	go func() {
 		logger.Info("listening", "addr", *listen, "version", version)
 		errc <- health.ListenAndServe()
@@ -204,6 +222,12 @@ func serverRun(args []string) error {
 		logger.Info("agent API listening", "addr", *agentListen, "ca_pin", ca.Pin())
 		errc <- agents.ListenAndServeTLS("", "")
 	}()
+	if mcpSrv != nil {
+		go func() {
+			logger.Info("MCP listening", "addr", *mcpListen)
+			errc <- mcpSrv.ListenAndServe()
+		}()
+	}
 
 	select {
 	case err := <-errc:
@@ -216,7 +240,11 @@ func serverRun(args []string) error {
 	logger.Info("shutting down")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), *shutdownTimeout)
 	defer cancel()
-	return errors.Join(health.Shutdown(shutdownCtx), agents.Shutdown(shutdownCtx))
+	err = errors.Join(health.Shutdown(shutdownCtx), agents.Shutdown(shutdownCtx))
+	if mcpSrv != nil {
+		err = errors.Join(err, mcpSrv.Shutdown(shutdownCtx))
+	}
+	return err
 }
 
 func newHTTPServer(addr string, h http.Handler) *http.Server {

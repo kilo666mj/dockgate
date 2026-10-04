@@ -414,6 +414,51 @@ func (s *Store) Coverage(ctx context.Context) (map[string]ScanCoverage, error) {
 	return out, rows.Err()
 }
 
+// ScanFailure is a container whose image could not be inventoried or
+// matched.
+type ScanFailure struct {
+	Host      string
+	Container string
+	Image     string
+	ImageID   string
+	Stage     string // "sbom" or "match"
+	Error     string
+	At        time.Time
+}
+
+// ScanFailures lists containers of active agents whose image's SBOM
+// generation or matching failed.
+func (s *Store) ScanFailures(ctx context.Context) ([]ScanFailure, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT a.name, c.name, c.image, c.image_id, 'sbom', r.error, r.failed_at
+		FROM sbom_requests r
+		JOIN agents a ON a.id = r.agent_id AND a.revoked_at IS NULL
+		JOIN containers c ON c.agent_id = r.agent_id AND c.image_id = r.image_id
+		WHERE r.failed_at IS NOT NULL
+		UNION ALL
+		SELECT a.name, c.name, c.image, c.image_id, 'match', sc.error, sc.scanned_at
+		FROM scans sc
+		JOIN agents a ON a.id = sc.agent_id AND a.revoked_at IS NULL
+		JOIN containers c ON c.agent_id = sc.agent_id AND c.image_id = sc.image_id
+		WHERE sc.error != ''
+		ORDER BY 1, 2`)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var out []ScanFailure
+	for rows.Next() {
+		var f ScanFailure
+		var at int64
+		if err := rows.Scan(&f.Host, &f.Container, &f.Image, &f.ImageID, &f.Stage, &f.Error, &at); err != nil {
+			return nil, err
+		}
+		f.At = time.Unix(at, 0)
+		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
 // Ignore suppresses a vulnerability, optionally only for one package or one
 // image repository, until it expires.
 type Ignore struct {

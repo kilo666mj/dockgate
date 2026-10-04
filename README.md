@@ -95,6 +95,27 @@ The agent keeps its key and certificates in `-state-dir`
 (default `/var/lib/dockgate-agent`). It needs access to the Docker socket,
 which is equivalent to root on the host.
 
+## MCP for agents
+
+`dockgate server run -mcp-listen 127.0.0.1:8098 -mcp-token-file /etc/dockgate/mcp.token`
+serves read-only MCP tools over Streamable HTTP at `/mcp`:
+
+| Tool | Returns |
+| --- | --- |
+| `dockgate_fleet_status` | per host: reporting state, container health, pending updates, fixable critical/high counts, scan coverage |
+| `dockgate_host_containers` | one host's containers with image, health, compose project and working directory, update status and fixable counts |
+| `dockgate_pending_updates` | containers whose tag points to a newer image, with digests |
+| `dockgate_vulnerabilities` | findings after ignore rules (default: fixable critical and high), with a limit |
+| `dockgate_find_vulnerability` | which hosts and containers have a given CVE |
+| `dockgate_ignores_list` | active ignore rules |
+| `dockgate_scan_failures` | containers whose image could not be inventoried or matched |
+
+Every request needs `Authorization: Bearer <token>`. The listener is meant for
+loopback behind an HTTPS proxy that admits only your MCP gateway; the SDK's
+localhost Host check is disabled for that reason, so never expose the
+listener directly. Enrollment, tokens, revocation and settings are not
+available over MCP.
+
 ## Fleetglass checks
 
 For each agent, filed under source `dockgate` with the agent's name as host:

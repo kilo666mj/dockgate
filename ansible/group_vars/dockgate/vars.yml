@@ -41,3 +41,9 @@ dockgate_tintwire_token: ""
 # Empty publishes to the token's own channel, which hook tokens require.
 dockgate_tintwire_channel: ""
 dockgate_alert_severities: "CRITICAL,HIGH"
+
+# MCP endpoint for agents, served on loopback behind an HTTPS proxy that
+# admits only the Switchboard gateway. Empty disables it. The bearer token is
+# generated on the host on first deploy; Switchboard copies it from there.
+dockgate_mcp_listen: ""
+dockgate_mcp_token_file: "{{ dockgate_config_dir }}/mcp.token"
