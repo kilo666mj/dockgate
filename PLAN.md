@@ -325,8 +325,8 @@ apply to enrollment, so it is not used.
 3. **UI and updates.** OIDC sign-in, job queue with approval, update gate,
    audit log (see [Update jobs](#update-jobs-phase-3)). *Update jobs, the
    approval UI and read-only MCP tools are done; dockgate also files
-   Taskboard tasks for updates that clear findings. Still to do: fleet and
-   host views in the web UI.*
+   Taskboard tasks for updates that clear findings, and the web UI has fleet
+   and host views (read-only) next to the job queue.*
 4. **Policy (audit).** Rules, exception labels, violation reporting.
 5. **Migration.** Move every host over, then retire the old tool and its
    notification relay.

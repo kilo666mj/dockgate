@@ -1,6 +1,7 @@
-// Package web serves dockgate's browser UI: the update-job queue, where a
-// signed-in person approves or rejects jobs. Sign-in is OIDC only; the UI
-// refuses to start without it.
+// Package web serves dockgate's browser UI: the fleet and each host's
+// containers, read-only, and the update-job queue, where a signed-in person
+// approves or rejects jobs. Sign-in is OIDC only; the UI refuses to start
+// without it.
 package web
 
 import (
@@ -15,11 +16,13 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 
 	"go.michaelspost.com/oidcrp"
 
+	"go.michaelspost.com/dockgate/internal/fleet"
 	"go.michaelspost.com/dockgate/internal/jobs"
 	"go.michaelspost.com/dockgate/internal/store"
 )
@@ -110,9 +113,11 @@ func (u *UI) parseTemplates() error {
 		},
 		"label": func(s string) string { return strings.ReplaceAll(s, "_", " ") },
 		"lower": strings.ToLower,
+		"ago":   func(t time.Time) string { return ago(u.now().Sub(t), t.IsZero()) },
+		"gib":   func(b int64) string { return fmt.Sprintf("%.1f GiB", float64(b)/(1<<30)) },
 	}
 	u.tmpl = map[string]*template.Template{}
-	for _, page := range []string{"login", "jobs", "job"} {
+	for _, page := range []string{"login", "jobs", "job", "fleet", "host"} {
 		t, err := template.New("layout.html").Funcs(funcs).ParseFS(assets, "templates/layout.html", "templates/"+page+".html")
 		if err != nil {
 			return fmt.Errorf("web: template %s: %w", page, err)
@@ -130,7 +135,9 @@ func (u *UI) Handler() http.Handler {
 	mux.Handle("GET /static/", http.StripPrefix("/static/", http.FileServerFS(static)))
 	mux.HandleFunc("GET /login", u.login)
 	mux.HandleFunc("POST /logout", u.requirePOST(u.logout))
-	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/jobs", http.StatusFound) })
+	mux.HandleFunc("GET /{$}", func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, "/fleet", http.StatusFound) })
+	mux.HandleFunc("GET /fleet", u.auth.Require(u.fleetPage))
+	mux.HandleFunc("GET /hosts/{name}", u.auth.Require(u.hostPage))
 	mux.HandleFunc("GET /jobs", u.auth.Require(u.jobList))
 	mux.HandleFunc("GET /jobs/{id}", u.auth.Require(u.jobPage))
 	mux.HandleFunc("POST /jobs/{id}/approve", u.auth.Require(u.requirePOST(u.decide(true))))
@@ -244,7 +251,7 @@ func (u *UI) render(w http.ResponseWriter, page string, data map[string]any) {
 
 func (u *UI) login(w http.ResponseWriter, r *http.Request) {
 	if _, ok := u.session(r); ok {
-		http.Redirect(w, r, "/jobs", http.StatusFound)
+		http.Redirect(w, r, "/fleet", http.StatusFound)
 		return
 	}
 	u.render(w, "login", map[string]any{"Title": "Sign in", "Error": r.URL.Query().Get("error")})
@@ -273,7 +280,156 @@ func (u *UI) jobList(w http.ResponseWriter, r *http.Request) {
 			closed = append(closed, j)
 		}
 	}
-	u.render(w, "jobs", map[string]any{"Title": "Update jobs", "Open": open, "Closed": closed, "Session": ws})
+	u.render(w, "jobs", map[string]any{"Title": "Update jobs", "Nav": "jobs", "Open": open, "Closed": closed, "Session": ws})
+}
+
+// openJobs maps host, then container name, to that container's open job.
+func (u *UI) openJobs(r *http.Request) (map[string]map[string]store.Job, error) {
+	open, err := u.store.Jobs(r.Context(), store.JobFilter{States: store.OpenJobStates, Limit: 500})
+	if err != nil {
+		return nil, err
+	}
+	out := map[string]map[string]store.Job{}
+	for _, j := range open {
+		if out[j.Host] == nil {
+			out[j.Host] = map[string]store.Job{}
+		}
+		if _, seen := out[j.Host][j.ContainerName]; !seen { // newest first
+			out[j.Host][j.ContainerName] = j
+		}
+	}
+	return out, nil
+}
+
+// fleetTotals adds up the hosts for the summary tiles.
+type fleetTotals struct {
+	Hosts, Reporting, Silent, Containers, Troubled, Updates, Critical, High, OpenJobs int
+}
+
+func (u *UI) fleetPage(w http.ResponseWriter, r *http.Request) {
+	ws, _ := u.session(r)
+	hosts, err := fleet.Hosts(r.Context(), u.store, u.now())
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	jobs, err := u.openJobs(r)
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	var t fleetTotals
+	openByHost := map[string]int{}
+	for _, h := range hosts {
+		t.Hosts++
+		if h.Reporting == "ok" {
+			t.Reporting++
+		} else {
+			t.Silent++
+		}
+		t.Containers += h.Containers
+		t.Troubled += h.Unhealthy + h.Restarting
+		t.Updates += h.UpdatesAvailable
+		t.Critical += h.FixableCritical
+		t.High += h.FixableHigh
+		openByHost[h.Host] = len(jobs[h.Host])
+		t.OpenJobs += len(jobs[h.Host])
+	}
+	u.render(w, "fleet", map[string]any{"Title": "Fleet", "Nav": "fleet", "Hosts": hosts, "Totals": t, "OpenJobs": openByHost, "Session": ws})
+}
+
+// containerRow is one container on the host page, with its open job.
+type containerRow struct {
+	fleet.Container
+	Job *store.Job
+}
+
+// trouble orders containers that need attention first: restarting, then
+// unhealthy, then running, then everything else (stopped or one-shot).
+func trouble(c fleet.Container) int {
+	switch {
+	case c.State == "restarting":
+		return 0
+	case c.State == "running" && c.Health == "unhealthy":
+		return 1
+	case c.State == "running":
+		return 2
+	default:
+		return 3
+	}
+}
+
+func (u *UI) hostPage(w http.ResponseWriter, r *http.Request) {
+	ws, _ := u.session(r)
+	ctx := r.Context()
+	name := r.PathValue("name")
+	agents, err := u.store.Agents(ctx)
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	var agent *store.Agent
+	for i := range agents {
+		if agents[i].Name == name && agents[i].RevokedAt.IsZero() {
+			agent = &agents[i]
+		}
+	}
+	if agent == nil {
+		http.NotFound(w, r)
+		return
+	}
+	hosts, err := fleet.Hosts(ctx, u.store, u.now())
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	var summary fleet.Host
+	for _, h := range hosts {
+		if h.Host == name {
+			summary = h
+		}
+	}
+	containers, err := fleet.Containers(ctx, u.store, *agent, u.now())
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	jobs, err := u.openJobs(r)
+	if err != nil {
+		u.fail(w, err)
+		return
+	}
+	sort.SliceStable(containers, func(i, j int) bool {
+		if a, b := trouble(containers[i]), trouble(containers[j]); a != b {
+			return a < b
+		}
+		return containers[i].Name < containers[j].Name
+	})
+	rows := make([]containerRow, 0, len(containers))
+	for _, c := range containers {
+		row := containerRow{Container: c}
+		if j, ok := jobs[name][c.Name]; ok {
+			row.Job = &j
+		}
+		rows = append(rows, row)
+	}
+	u.render(w, "host", map[string]any{"Title": name, "Nav": "fleet", "Host": summary, "Agent": agent, "Containers": rows, "Session": ws})
+}
+
+// ago is a short, human duration for "last report 3 minutes ago".
+func ago(d time.Duration, never bool) string {
+	switch {
+	case never:
+		return "never"
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%d min ago", int(d/time.Minute))
+	case d < 48*time.Hour:
+		return fmt.Sprintf("%d h ago", int(d/time.Hour))
+	default:
+		return fmt.Sprintf("%d days ago", int(d/(24*time.Hour)))
+	}
 }
 
 func (u *UI) jobPage(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +450,7 @@ func (u *UI) jobPage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	u.render(w, "job", map[string]any{
-		"Title": fmt.Sprintf("%s on %s", job.ContainerName, job.Host), "Job": job, "Session": ws,
+		"Title": fmt.Sprintf("%s on %s", job.ContainerName, job.Host), "Nav": "jobs", "Job": job, "Session": ws,
 		"CriticalFixed": critical, "Pending": job.State == store.JobPendingApproval, "Notice": notices[r.URL.Query().Get("notice")],
 	})
 }

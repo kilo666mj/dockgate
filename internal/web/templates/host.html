@@ -1,0 +1,43 @@
+{{define "content"}}
+<p class="crumb"><a href="/fleet">Fleet</a></p>
+<h1>{{.Host.Host}} <span class="state r-{{.Host.Reporting}}">{{if eq .Host.Reporting "ok"}}reporting{{else}}{{.Host.Reporting}}{{end}}</span></h1>
+
+<section class="card">
+  <dl>
+    <dt>Last report</dt><dd>{{ago .Host.LastReportAt}}{{with .Agent.LastReportAt}}{{if not .IsZero}} <span class="muted">({{when .}})</span>{{end}}{{end}}</dd>
+    <dt>Agent</dt><dd>{{or .Agent.AgentVersion "unknown"}}{{with .Agent.Hostname}} <span class="muted">on {{.}}</span>{{end}}</dd>
+    <dt>Docker</dt><dd>{{or .Agent.Docker.Version "unknown"}}{{with .Agent.Docker.OS}} <span class="muted">{{.}}/{{$.Agent.Docker.Arch}}{{with $.Agent.Docker.CPUs}} · {{.}} CPUs{{end}}{{with $.Agent.Docker.MemoryBytes}} · {{gib .}}{{end}}</span>{{end}}</dd>
+    <dt>Certificate</dt><dd>expires {{when .Agent.CertNotAfter}}</dd>
+    {{with .Agent.ReportErrors}}<dt>Report errors</dt><dd><ul class="plain">{{range .}}<li class="warn untrusted">{{.}}</li>{{end}}</ul></dd>{{end}}
+  </dl>
+</section>
+
+<div class="metrics tiles">
+  <div><b>{{.Host.Running}}/{{.Host.Containers}}</b><span>running</span></div>
+  <div class="{{if or .Host.Unhealthy .Host.Restarting}}bad{{end}}"><b>{{.Host.Unhealthy}}/{{.Host.Restarting}}</b><span>unhealthy / restarting</span></div>
+  <div><b>{{.Host.UpdatesAvailable}}</b><span>updates available</span></div>
+  <div class="{{if .Host.FixableCritical}}bad{{end}}"><b>{{.Host.FixableCritical}}/{{.Host.FixableHigh}}</b><span>fixable critical / high</span></div>
+</div>
+
+<h2>Containers</h2>
+{{if .Containers}}
+<ul class="containers">
+{{range .Containers}}
+  <li class="card">
+    <div class="row">
+      <span class="what"><strong>{{.Name}}</strong>{{if .ComposeProject}} <span class="muted">{{.ComposeProject}}{{with .ComposeService}} / {{.}}{{end}}</span>{{end}}</span>
+      <span class="state c-{{.State}}{{if eq .Health "unhealthy"}} c-unhealthy{{end}}">{{.State}}{{with .Health}} · {{.}}{{end}}</span>
+    </div>
+    <div class="meta"><code title="{{.Image}}">{{.Image}}</code> · {{.Status}}{{if .RestartCount}} · <span class="warn">{{.RestartCount}} restart{{if gt .RestartCount 1}}s{{end}}</span>{{end}}</div>
+    <div class="counts">
+      {{with .Update}}{{if eq .Status "available"}}<span class="state as-is s-pending_approval" title="{{.RemoteDigest}}">update available · {{short .RemoteDigest}}</span>{{else if eq .Status "current"}}<span class="muted">up to date</span>{{else}}<span class="muted" title="{{.Error}}">update check {{.Status}}</span>{{end}}{{end}}
+      {{if eq .Scan "scanned"}}{{if or .FixableCritical .FixableHigh}}<span><span class="sev critical">{{.FixableCritical}}</span> <span class="sev high">{{.FixableHigh}}</span> fixable</span>{{else}}<span class="muted">no fixable critical/high</span>{{end}}{{else if eq .Scan "failed"}}<span class="warn">scan failed</span>{{else}}<span class="muted">scan {{or .Scan "pending"}}</span>{{end}}
+      {{with .Job}}<a class="state s-{{.State}}" href="/jobs/{{.ID}}">job {{label .State}}</a>{{end}}
+    </div>
+  </li>
+{{end}}
+</ul>
+{{else}}
+<p class="muted">This host has not reported any containers.</p>
+{{end}}
+{{end}}
