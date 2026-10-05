@@ -10,6 +10,9 @@
 body { margin: 0; font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--fg); }
 header { display: flex; justify-content: space-between; align-items: center; padding: 12px 16px; border-bottom: 1px solid var(--line); background: var(--card); }
 .brand { font-weight: 700; color: var(--fg); text-decoration: none; }
+nav { display: flex; gap: 16px; align-items: baseline; flex-wrap: wrap; }
+nav a:not(.brand) { color: var(--muted); text-decoration: none; font-size: 14px; }
+nav a[aria-current=page] { color: var(--fg); font-weight: 600; }
 .signout { display: flex; gap: 8px; align-items: center; margin: 0; }
 .who { color: var(--muted); font-size: 13px; }
 main { max-width: 860px; margin: 0 auto; padding: 16px; }
@@ -50,8 +53,31 @@ button.link { border: 0; background: none; color: var(--accent); padding: 0; }
 .history { list-style: none; padding: 0; margin: 0; font-size: 13px; } .history li { margin: 4px 0; }
 .when { color: var(--muted); }
 .crumb { margin: 0; font-size: 13px; }
+.tiles { margin: 0 0 12px; }
+.hosts, .containers, .plain { list-style: none; padding: 0; margin: 0; }
+.hosts li a { display: grid; gap: 4px; padding: 12px; margin: 8px 0; background: var(--card); border: 1px solid var(--line); border-radius: 10px; color: var(--fg); text-decoration: none; }
+.hostname { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.meta { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.counts { display: flex; gap: 6px 14px; flex-wrap: wrap; align-items: center; font-size: 13px; }
+.counts .bad, .bad { color: var(--bad); }
+.containers .card { padding: 12px; margin: 8px 0; display: grid; gap: 4px; }
+.containers .row { display: flex; justify-content: space-between; gap: 8px; align-items: center; flex-wrap: wrap; }
+.containers code { overflow-wrap: anywhere; }
+a.state { text-decoration: none; }
+.state.as-is { text-transform: none; }
+button.link { white-space: nowrap; }
+.r-ok, .c-running { background: #dcf3e5; color: #16673a; }
+.r-stale, .r-never, .c-restarting, .c-unhealthy, .c-dead { background: var(--bad-bg); color: var(--bad); }
+.c-exited, .c-created, .c-paused { background: var(--line); color: var(--muted); }
+@media (prefers-color-scheme: dark) {
+  .r-ok, .c-running, .s-succeeded { background: #173b26; color: #7fdca4; }
+  .s-pending_approval { background: #3b2f12; color: #f0c56a; }
+  .s-approved, .s-dispatched { background: #1b2b4a; color: #9dbcf5; }
+}
 @media (max-width: 600px) {
   .metrics { grid-template-columns: repeat(2, 1fr); }
   .findings { columns: 1; }
   .jobs li a { grid-template-columns: 1fr; } .jobs .meta { grid-column: 1; }
+  .who { display: none; }
+  nav { gap: 12px; }
 }

@@ -1,0 +1,34 @@
+{{define "content"}}
+<h1>Fleet</h1>
+{{with .Totals}}
+<div class="metrics tiles">
+  <div class="{{if .Silent}}bad{{end}}"><b>{{.Reporting}}/{{.Hosts}}</b><span>hosts reporting</span></div>
+  <div class="{{if .Troubled}}bad{{end}}"><b>{{.Troubled}}</b><span>unhealthy or restarting</span></div>
+  <div><b>{{.Updates}}</b><span>updates available</span></div>
+  <div class="{{if .Critical}}bad{{end}}"><b>{{.Critical}}</b><span>fixable critical</span></div>
+</div>
+{{if .OpenJobs}}<p><a href="/jobs">{{.OpenJobs}} open update job{{if gt .OpenJobs 1}}s{{end}}</a></p>{{end}}
+{{end}}
+
+{{if .Hosts}}
+<ul class="hosts">
+{{range .Hosts}}
+  <li><a href="/hosts/{{.Host}}">
+    <span class="hostname"><strong>{{.Host}}</strong> <span class="state r-{{.Reporting}}">{{if eq .Reporting "ok"}}reporting{{else}}{{.Reporting}}{{end}}</span></span>
+    <span class="meta">last report {{ago .LastReportAt}} · agent {{or .AgentVersion "unknown"}} · Docker {{or .DockerVersion "unknown"}}</span>
+    <span class="counts">
+      <span>{{.Running}}/{{.Containers}} running</span>
+      {{if .Unhealthy}}<span class="bad">{{.Unhealthy}} unhealthy</span>{{end}}
+      {{if .Restarting}}<span class="bad">{{.Restarting}} restarting</span>{{end}}
+      {{if .UpdatesAvailable}}<span>{{.UpdatesAvailable}} update{{if gt .UpdatesAvailable 1}}s{{end}}</span>{{end}}
+      {{if or .FixableCritical .FixableHigh}}<span><span class="sev critical">{{.FixableCritical}}</span> <span class="sev high">{{.FixableHigh}}</span> fixable</span>{{end}}
+      <span class="muted">scanned {{.Scanned}}{{if .ScanPending}}, {{.ScanPending}} pending{{end}}{{if .ScanFailed}}, <span class="warn">{{.ScanFailed}} failed</span>{{end}}</span>
+      {{with index $.OpenJobs .Host}}<span class="state as-is s-approved">{{.}} open job{{if gt . 1}}s{{end}}</span>{{end}}
+    </span>
+  </a></li>
+{{end}}
+</ul>
+{{else}}
+<p class="muted">No hosts have enrolled yet.</p>
+{{end}}
+{{end}}
