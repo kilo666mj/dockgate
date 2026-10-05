@@ -157,6 +157,7 @@ func serverRun(args []string) error {
 	tbMaxOpen := fs.Int("taskboard-max-open", envInt("DOCKGATE_TASKBOARD_MAX_OPEN", 5), "maximum open update tasks dockgate keeps filed")
 	tbRequirements := fs.String("taskboard-requirements", envOr("DOCKGATE_TASKBOARD_REQUIREMENTS", "runner:local"), "comma-separated requirement tokens routing the tasks")
 	tbProject := fs.String("taskboard-project", envOr("DOCKGATE_TASKBOARD_PROJECT", "dockgate"), "Taskboard project for the tasks")
+	tbApprovers := fs.String("taskboard-approvers", os.Getenv("DOCKGATE_TASKBOARD_APPROVERS"), "comma-separated Taskboard person principals whose answer in an update task approves its job; empty means every job is approved here")
 	ownPrefixes := fs.String("own-image-prefixes", os.Getenv("DOCKGATE_OWN_IMAGE_PREFIXES"), "comma-separated image reference prefixes built from your own repositories (fixed by pull request instead of pull and recreate)")
 	mcpListen := fs.String("mcp-listen", os.Getenv("DOCKGATE_MCP_LISTEN"), "MCP (Streamable HTTP) listen address for agents via a TLS proxy, e.g. 127.0.0.1:8098; empty disables it")
 	mcpTokenFile := fs.String("mcp-token-file", os.Getenv("DOCKGATE_MCP_TOKEN_FILE"), "file holding the MCP bearer token (required with -mcp-listen)")
@@ -242,10 +243,13 @@ func serverRun(args []string) error {
 		if token == "" {
 			return errors.New("DOCKGATE_TASKBOARD_TOKEN is required with -taskboard-url")
 		}
+		client := &tasks.Client{Endpoint: *tbURL, Token: token, Version: version}
 		syncer := &tasks.Syncer{
 			Store: st, Logger: logger, MaxOpen: *tbMaxOpen, Requirements: splitList(*tbRequirements),
-			Project: *tbProject, OwnImagePrefixes: splitList(*ownPrefixes),
-			API: &tasks.Client{Endpoint: *tbURL, Token: token, Version: version},
+			Project: *tbProject, OwnImagePrefixes: splitList(*ownPrefixes), API: client,
+		}
+		if approvers := splitList(*tbApprovers); len(approvers) > 0 {
+			jobSvc.Approvals = tasks.NewApprovals(client, approvers)
 		}
 		go syncer.Run(ctx, 10*time.Minute)
 	}

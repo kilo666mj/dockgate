@@ -109,8 +109,14 @@ rescan the whole fleet without touching any host.
 Mounting the socket `:ro` does not make the Docker API read-only; it only
 stops the file itself being replaced. Any process with the socket has full
 Docker access, which is why the scanner image is pinned. Generating an SBOM
-needs no vulnerability database, so the container should run with
-`--network none`; confirm the exact Trivy flags for that in phase 2.
+needs no vulnerability database, so the container runs with no network, a
+read-only root filesystem, all capabilities dropped and no-new-privileges,
+writing to an anonymous volume that is removed with it.
+
+Some images cannot be inventoried offline (Trivy needs its Java database for
+JAR files). When an agent reports an SBOM failure for an image with a
+registry digest, the server inventories that digest from the registry
+instead and stores the result for that agent and image.
 
 ### On the server: matching against one database
 
@@ -124,8 +130,8 @@ needs no vulnerability database, so the container should run with
   vulnerability ID and package so a CVE reported by both counts once.
 
 SBOM-based matching relies on the SBOM recording OS and package details
-accurately. Phase 2 should compare SBOM results with a direct
-`trivy image` scan on a few real images before relying on it.
+accurately. Phase 2 compared SBOM results with direct `trivy image` scans
+on real images and found them identical.
 
 ### Findings
 
@@ -139,8 +145,9 @@ cross-fleet questions ("which hosts run anything with CVE-Y?") cheap.
 
 - a new image digest appears on any host;
 - the vulnerability database updates (server-only re-match);
-- a candidate image arrives for the update gate (the agent pulls it,
-  generates its SBOM, and the server matches it before deciding).
+- an update becomes available: the server inventories the candidate
+  (`repository@digest` for the host's platform) straight from the registry
+  and matches it, so the gate's diff is ready before anyone asks.
 
 ### Noise control
 
@@ -159,7 +166,7 @@ cross-fleet questions ("which hosts run anything with CVE-Y?") cheap.
 When an update is requested (or found, if auto-update is enabled for a
 container):
 
-1. The agent pulls the candidate image and sends its SBOM.
+1. The server inventories the candidate image from the registry.
 2. The server matches it and diffs the candidate's findings against the
    running image's findings.
 3. Policy decides:
@@ -195,9 +202,23 @@ agent executes. Agents never approve.
    server host is the fallback. Approval re-checks that the candidate digest
    is still current; a newer image supersedes the job. Pending jobs expire
    after 24 hours, approved jobs that no agent picks up after 1 hour.
+
+   **Approving in Taskboard.** When dockgate files a Taskboard task for an
+   update, the worker that picks it up asks the operator one blocking
+   question: *Let the agent update it*, *I'll approve in dockgate*, or
+   *Don't update*. The question carries a `dockgate-approval:` line naming
+   the host, container and digest. When a request names that task, the
+   server reads the answer itself (as the task's creator) and approves the
+   job as `taskboard:<person>` only if one of `dockgate_taskboard_approvers`
+   chose *Let the agent update it* for exactly that host, container and
+   digest, and the candidate introduces no critical or high findings.
+   Anything else, including an error reaching Taskboard, leaves the job
+   pending here. Agents never approve: Taskboard records who answered, and
+   only people can answer.
 3. **Dispatch.** The next report from the host's agent receives the job
-   (exactly once). A dispatched job without a result after 30 minutes is
-   marked lost; it is not retried automatically.
+   (exactly once). The agent reports the jobs it holds on every check-in; a
+   dispatched job the agent has not reported holding for 10 minutes is
+   marked lost. Lost jobs are not retried automatically.
 4. **Execute.** The agent recreates the container through the Engine API,
    for Compose containers too, so it needs no compose files:
    - refuse when the container changed (different ID or image reference),
@@ -292,19 +313,20 @@ apply to enrollment, so it is not used.
 
 1. **Reporting.** Agent and server with enrollment and mTLS; container and
    image inventory; update checks; fleet monitor export. Run alongside the
-   current tool on one host. *Code complete; not yet deployed. Still to do:
-   an Ansible role for agents, and a first host running next to the old
-   tool.*
+   current tool on one host. *Done and running on every host; agents are
+   deployed by `ansible/agent.yml`.*
 2. **Scanning.** Agent SBOM generation with a digest-pinned Trivy image;
    server-side database and matching; findings rows; re-match on database
    update; ignore list; alerts on new fixable findings. Validate SBOM results
-   against direct image scans. *Built. A prototype on real images gave
-   identical findings for SBOM matching and direct scans (30/30 and 220/220).
-   Trivy is pinned to 0.74.0: image by digest on agents, binary by checksum
-   on the server.*
+   against direct image scans. *Done. SBOM matching and direct scans gave
+   identical findings on real images. Trivy is pinned to 0.74.0: image by
+   digest on agents, binary by checksum on the server. The server also
+   inventories update candidates and agent failures from registries.*
 3. **UI and updates.** OIDC sign-in, job queue with approval, update gate,
-   audit log (see [Update jobs](#update-jobs-phase-3)). Fleet and host views
-   follow.
+   audit log (see [Update jobs](#update-jobs-phase-3)). *Update jobs, the
+   approval UI and read-only MCP tools are done; dockgate also files
+   Taskboard tasks for updates that clear findings. Still to do: fleet and
+   host views in the web UI.*
 4. **Policy (audit).** Rules, exception labels, violation reporting.
 5. **Migration.** Move every host over, then retire the old tool and its
    notification relay.
@@ -316,5 +338,6 @@ apply to enrollment, so it is not used.
   about 4.5 minutes) because Trivy exports the image from the daemon. The
   agent works through requests one at a time in the background so reports
   are not delayed; the server asks for at most two images per report.
-- Ship the agent as a container (needs the socket mounted) or a systemd
-  service (simpler socket access, Ansible-native)?
+
+Settled: the agent ships as a systemd service installed by Ansible, not as a
+container.

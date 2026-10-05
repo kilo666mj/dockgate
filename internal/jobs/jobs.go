@@ -37,7 +37,15 @@ type Service struct {
 	// OwnImagePrefixes mark images built from the operator's repositories;
 	// they are fixed by a pull request, never by an update job.
 	OwnImagePrefixes []string
-	now              func() time.Time
+	// Approvals, when set, looks for an operator's approval in the Taskboard
+	// task a request names; nil means every job waits for approval here.
+	Approvals Approvals
+	now       func() time.Time
+}
+
+// Approvals finds who approved an update in a Taskboard task, if anyone.
+type Approvals interface {
+	ApprovedBy(ctx context.Context, taskID, host, container, digest string) (string, error)
 }
 
 func (s *Service) clock() time.Time {
@@ -162,8 +170,38 @@ func (s *Service) RequestUpdate(ctx context.Context, r Request) (store.Job, erro
 	}
 	s.Logger.Info("update job requested", "job_id", job.ID, "host", job.Host, "container", job.ContainerName,
 		"digest", job.Digest, "fixes", len(job.Gate.Fixes), "introduces", len(job.Gate.Introduces), "by", r.Actor)
+	if approved, ok := s.approveFromTask(ctx, job); ok {
+		return approved, nil
+	}
 	s.notifyPending(ctx, job)
 	return job, nil
+}
+
+// approveFromTask approves a pending job when an operator already approved
+// this exact update in the Taskboard task that requested it. A job that
+// introduces findings, or any doubt about the approval, leaves it pending.
+func (s *Service) approveFromTask(ctx context.Context, job store.Job) (store.Job, bool) {
+	if s.Approvals == nil || job.TaskID == "" || job.Gate.Hold {
+		return store.Job{}, false
+	}
+	person, err := s.Approvals.ApprovedBy(ctx, job.TaskID, job.Host, job.ContainerName, job.Digest)
+	if err != nil {
+		s.Logger.Warn("check Taskboard approval; the job waits for approval here", "job_id", job.ID, "task_id", job.TaskID, "err", err)
+		return store.Job{}, false
+	}
+	if person == "" {
+		return store.Job{}, false
+	}
+	decided, err := s.Decide(ctx, job.ID, true, "taskboard:"+person, "approved in Taskboard task "+job.TaskID)
+	if err != nil {
+		s.Logger.Error("approve job from Taskboard", "job_id", job.ID, "err", err)
+		return store.Job{}, false
+	}
+	if decided.State != store.JobApproved {
+		return decided, true
+	}
+	s.notifyApproved(ctx, decided, person)
+	return decided, true
 }
 
 // Decide approves or rejects a pending job on behalf of actor, a person.
@@ -294,6 +332,22 @@ func (s *Service) notifyPending(ctx context.Context, j store.Job) {
 	}
 	if u := s.URL(j.ID); u != "" {
 		card.Actions = []tintwire.Action{{Label: "Review", Type: tintwire.ActionLink, URL: u}}
+	}
+	s.publish(ctx, card)
+}
+
+func (s *Service) notifyApproved(ctx context.Context, j store.Job, person string) {
+	card := tintwire.Card{
+		Title:        fmt.Sprintf("Updating %s on %s", j.ContainerName, j.Host),
+		Summary:      truncate(fmt.Sprintf("Approved in Taskboard by %s. The host's agent recreates %s with the scanned candidate at its next report. %s", person, j.ContainerName, j.Reason), 500),
+		Severity:     tintwire.SeverityInfo,
+		Metrics:      []tintwire.Metric{{Label: "Fixes", Value: len(j.Gate.Fixes)}, {Label: "Remaining", Value: j.Gate.Remaining}},
+		Fields:       []tintwire.Field{{Label: "Candidate", Value: j.Digest}},
+		State:        tintwire.StateFiring,
+		LifecycleKey: "dockgate-job-" + j.ID,
+	}
+	if u := s.URL(j.ID); u != "" {
+		card.Links = []tintwire.Link{{Label: "Job", URL: u}}
 	}
 	s.publish(ctx, card)
 }

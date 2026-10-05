@@ -33,30 +33,7 @@ func (b bearer) RoundTrip(r *http.Request) (*http.Response, error) {
 }
 
 func (c *Client) call(ctx context.Context, tool string, args any) (Task, error) {
-	base := c.HTTP
-	if base == nil {
-		base = &http.Client{Timeout: 30 * time.Second}
-	}
-	next := base.Transport
-	if next == nil {
-		next = http.DefaultTransport
-	}
-	hc := *base
-	hc.Transport = bearer{token: c.Token, next: next}
-	client := mcp.NewClient(&mcp.Implementation{Name: "dockgate", Version: c.Version}, nil)
-	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: c.Endpoint, HTTPClient: &hc}, nil)
-	if err != nil {
-		return Task{}, fmt.Errorf("connect to taskboard: %w", err)
-	}
-	defer func() { _ = session.Close() }()
-	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
-	if err != nil {
-		return Task{}, fmt.Errorf("taskboard %s: %w", tool, err)
-	}
-	if res.IsError {
-		return Task{}, fmt.Errorf("taskboard %s: %s", tool, toolText(res))
-	}
-	raw, err := json.Marshal(res.StructuredContent)
+	raw, err := c.callRaw(ctx, tool, args)
 	if err != nil {
 		return Task{}, err
 	}
@@ -75,6 +52,34 @@ func (c *Client) call(ctx context.Context, tool string, args any) (Task, error) 
 		return Task{}, errors.New("taskboard " + tool + ": response has no task")
 	}
 	return Task{ID: out.Task.ID, Version: out.Task.Version, Status: out.Task.Status, Owner: out.Task.Owner}, nil
+}
+
+// callRaw calls a Taskboard tool and returns its structured result.
+func (c *Client) callRaw(ctx context.Context, tool string, args any) (json.RawMessage, error) {
+	base := c.HTTP
+	if base == nil {
+		base = &http.Client{Timeout: 30 * time.Second}
+	}
+	next := base.Transport
+	if next == nil {
+		next = http.DefaultTransport
+	}
+	hc := *base
+	hc.Transport = bearer{token: c.Token, next: next}
+	client := mcp.NewClient(&mcp.Implementation{Name: "dockgate", Version: c.Version}, nil)
+	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: c.Endpoint, HTTPClient: &hc}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("connect to taskboard: %w", err)
+	}
+	defer func() { _ = session.Close() }()
+	res, err := session.CallTool(ctx, &mcp.CallToolParams{Name: tool, Arguments: args})
+	if err != nil {
+		return nil, fmt.Errorf("taskboard %s: %w", tool, err)
+	}
+	if res.IsError {
+		return nil, fmt.Errorf("taskboard %s: %s", tool, toolText(res))
+	}
+	return json.Marshal(res.StructuredContent)
 }
 
 func toolText(res *mcp.CallToolResult) string {

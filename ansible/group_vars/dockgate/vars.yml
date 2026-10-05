@@ -55,6 +55,10 @@ dockgate_taskboard_url: ""
 dockgate_taskboard_token: ""
 dockgate_taskboard_max_open: 5
 dockgate_taskboard_requirements: "runner:local"
+# Taskboard person principals (OIDC subjects) whose answer "Let the agent
+# update it" in an update task approves its job, so they approve once, in
+# Taskboard. dockgate checks the answer itself. Empty: approve in dockgate.
+dockgate_taskboard_approvers: []
 # Image reference prefixes built from your own repositories.
 dockgate_own_image_prefixes: []
 
