@@ -202,6 +202,19 @@ agent executes. Agents never approve.
    server host is the fallback. Approval re-checks that the candidate digest
    is still current; a newer image supersedes the job. Pending jobs expire
    after 24 hours, approved jobs that no agent picks up after 1 hour.
+
+   **Approving in Taskboard.** When dockgate files a Taskboard task for an
+   update, the worker that picks it up asks the operator one blocking
+   question: *Let the agent update it*, *I'll approve in dockgate*, or
+   *Don't update*. The question carries a `dockgate-approval:` line naming
+   the host, container and digest. When a request names that task, the
+   server reads the answer itself (as the task's creator) and approves the
+   job as `taskboard:<person>` only if one of `dockgate_taskboard_approvers`
+   chose *Let the agent update it* for exactly that host, container and
+   digest, and the candidate introduces no critical or high findings.
+   Anything else, including an error reaching Taskboard, leaves the job
+   pending here. Agents never approve: Taskboard records who answered, and
+   only people can answer.
 3. **Dispatch.** The next report from the host's agent receives the job
    (exactly once). The agent reports the jobs it holds on every check-in; a
    dispatched job the agent has not reported holding for 10 minutes is

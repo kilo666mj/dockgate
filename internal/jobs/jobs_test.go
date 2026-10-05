@@ -282,3 +282,79 @@ func TestExpiry(t *testing.T) {
 		t.Fatalf("late result = %+v, %v", j, err)
 	}
 }
+
+type fakeApprovals struct {
+	person string
+	err    error
+	asked  []string
+}
+
+func (a *fakeApprovals) ApprovedBy(_ context.Context, taskID, host, container, digest string) (string, error) {
+	a.asked = append(a.asked, strings.Join([]string{taskID, host, container, digest}, " "))
+	return a.person, a.err
+}
+
+// cleanCandidate scans the candidate with no findings, so the update only fixes.
+func cleanCandidate(t *testing.T, e *env) {
+	t.Helper()
+	ctx := context.Background()
+	if err := e.st.SaveCandidateSBOM(ctx, store.RegistryTarget{Reference: "example/web@" + newDigest, Digest: newDigest, Platform: "linux/amd64"}, []byte(`{}`), "", e.now); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.st.SaveCandidateScan(ctx, store.CandidateKey{Digest: newDigest, Platform: "linux/amd64"}, "db1", nil, "", e.now); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTaskboardApprovalApprovesTheJob(t *testing.T) {
+	e := setup(t, false)
+	cleanCandidate(t, e)
+	approvals := &fakeApprovals{person: "person-1"}
+	e.svc.Approvals = approvals
+	job, err := request(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.State != store.JobApproved || job.DecidedBy != "taskboard:person-1" {
+		t.Fatalf("job = state %q decided by %q, want approved by taskboard:person-1", job.State, job.DecidedBy)
+	}
+	if want := "01TASK alpha web " + newDigest; len(approvals.asked) != 1 || approvals.asked[0] != want {
+		t.Fatalf("asked = %q, want %q", approvals.asked, want)
+	}
+	if len(e.pub.cards) != 1 || e.pub.cards[0].Title != "Updating web on alpha" || !strings.Contains(e.pub.cards[0].Summary, "person-1") {
+		t.Fatalf("cards = %+v, want one approved card", e.pub.cards)
+	}
+}
+
+func TestTaskboardApprovalFallsBackToApprovalHere(t *testing.T) {
+	for name, approvals := range map[string]*fakeApprovals{
+		"nobody approved":   {},
+		"taskboard failing": {person: "person-1", err: errors.New("taskboard unavailable")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := setup(t, false)
+			cleanCandidate(t, e)
+			e.svc.Approvals = approvals
+			job, err := request(e)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if job.State != store.JobPendingApproval || len(e.pub.cards) != 1 || !strings.HasPrefix(e.pub.cards[0].Title, "Approve update") {
+				t.Fatalf("job = %q, cards = %+v; want pending with an approval card", job.State, e.pub.cards)
+			}
+		})
+	}
+}
+
+func TestTaskboardApprovalNeverCoversAnUpdateThatIntroducesFindings(t *testing.T) {
+	e := setup(t, true) // the candidate introduces CVE-9
+	approvals := &fakeApprovals{person: "person-1"}
+	e.svc.Approvals = approvals
+	job, err := request(e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.State != store.JobPendingApproval || len(approvals.asked) != 0 {
+		t.Fatalf("job = %q, asked = %q; want pending without asking Taskboard", job.State, approvals.asked)
+	}
+}
