@@ -160,12 +160,16 @@ verify. Images matching `-own-image-prefixes` are fixed by pull request rather
 than pull and recreate. The summary ends with a `dockgate-task: {...}` JSON
 line (host, container, image, candidate digest, `fix` of `update_job` or
 `pull_request`) for workers. BuildKit builder containers that `docker buildx`
-runs (`buildx_buildkit_*`) are scanned but never get tasks or jobs.
+runs (`buildx_buildkit_*`) are scanned but never get tasks or jobs. Exited, dead,
+and never-started containers do not generate automatic update tasks.
 
 While a task is unclaimed dockgate refreshes it when the candidate image
 changes and cancels it with a "Resolved" note when the update stops being
 needed. Once an agent claims it, dockgate only reads it. A task a person or
-worker closed is not refiled until a newer image appears. This needs a
+worker completed is not refiled until a newer image appears. Cancelling a task
+dismisses that host/container even when a newer image appears; explicitly reopen
+the same task to resume tracking. Producer cancellation with a "Resolved" note
+does not suppress a future actionable update. This needs a
 Taskboard that lets producers maintain their unclaimed tasks, and the
 credential's policy must allow the requirement token and `task:sensitive`.
 

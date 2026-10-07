@@ -102,8 +102,26 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		return err
 	}
 	actionable := map[string]store.UpdateImpact{}
+	// Exited one-shot/init containers are inventory, not running services to
+	// recreate automatically. Findings remain visible in the vulnerability UI.
+	stopped := map[string]bool{}
+	agents, err := s.Store.Agents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, agent := range agents {
+		containers, err := s.Store.Containers(ctx, agent.ID)
+		if err != nil {
+			return err
+		}
+		for _, container := range containers {
+			if container.State == "exited" || container.State == "dead" || container.State == "created" {
+				stopped[key(agent.Name, container.Name)] = true
+			}
+		}
+	}
 	for _, u := range impacts {
-		if u.Actionable && store.UpdateExempt(u.Container) == "" {
+		if u.Actionable && store.UpdateExempt(u.Container) == "" && !stopped[key(u.Host, u.Container)] {
 			actionable[key(u.Host, u.Container)] = u
 		}
 	}
@@ -138,6 +156,20 @@ func (s *Syncer) Sync(ctx context.Context) error {
 		case errors.Is(err, store.ErrNotFound):
 		case err != nil:
 			return err
+		case last.ClosedReason == "closed in Taskboard: cancelled":
+			// A moving latest tag is not permission to undo a dismissal.
+			// Reopening the original task explicitly resumes this container.
+			task, err := s.API.Get(ctx, last.TaskID)
+			if err != nil {
+				return err
+			}
+			if task.Status != statusCancelled && task.Status != statusDone {
+				if err := s.Store.ReopenUpdateTask(ctx, last.TaskID, now); err != nil {
+					return err
+				}
+				stillOpen++
+			}
+			continue
 		case last.RemoteDigest == u.RemoteDigest:
 			// Already filed for this candidate and closed by a person or
 			// worker; only a newer image warrants a new task.
