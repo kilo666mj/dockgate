@@ -79,6 +79,12 @@ func (s *Store) CloseUpdateTask(ctx context.Context, taskID, reason string, now 
 		WHERE task_id = ? AND closed_at IS NULL`, now.Unix(), truncate(reason, 500), now.Unix(), taskID))
 }
 
+// ReopenUpdateTask resumes tracking when a person reopens a dismissed task.
+func (s *Store) ReopenUpdateTask(ctx context.Context, taskID string, now time.Time) error {
+	return s.oneRow(s.db.ExecContext(ctx, `UPDATE update_tasks SET closed_at = NULL, closed_reason = '', updated_at = ?
+		WHERE task_id = ? AND closed_at IS NOT NULL`, now.Unix(), taskID))
+}
+
 func (s *Store) oneRow(res sql.Result, err error) error {
 	if err != nil {
 		return err

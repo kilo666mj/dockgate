@@ -204,6 +204,77 @@ func TestSyncDoesNotRefileForTheSameCandidate(t *testing.T) {
 	}
 }
 
+func TestCancellationSurvivesNewDigestAndExplicitReopen(t *testing.T) {
+	st, agentID := fixture(t, "db")
+	api := newFake()
+	s := syncer(st, api)
+	ctx := context.Background()
+	if err := s.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	api.tasks["T1"].Status = statusCancelled
+	if err := s.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	containers, err := st.Containers(ctx, agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := "sha256:" + strings.Repeat("3", 64)
+	containers[0].Update.RemoteDigest = digest
+	now := time.Now()
+	if err := st.SaveReport(ctx, agentID, protocol.Report{Docker: protocol.DockerInfo{OS: "linux", Arch: "amd64"}, Containers: containers}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCandidateSBOM(ctx, store.RegistryTarget{Reference: "example/db@" + digest, Digest: digest, Platform: "linux/amd64"}, []byte(`{}`), "", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SaveCandidateScan(ctx, store.CandidateKey{Digest: digest, Platform: "linux/amd64"}, "db1", nil, "", now); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := s.Sync(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(api.created) != 1 {
+		t.Fatal("new digest undid dismissal")
+	}
+	api.tasks["T1"].Status = statusQueued
+	for range 2 {
+		if err := s.Sync(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open, err := st.OpenUpdateTasks(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(open) != 1 || open[0].TaskID != "T1" || open[0].RemoteDigest != digest {
+		t.Fatalf("reopened = %+v", open)
+	}
+}
+
+func TestExitedInitContainerDoesNotCreateUpdateTask(t *testing.T) {
+	st, agentID := fixture(t, "init")
+	ctx := context.Background()
+	containers, err := st.Containers(ctx, agentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	containers[0].State = "exited"
+	if err := st.SaveReport(ctx, agentID, protocol.Report{Docker: protocol.DockerInfo{OS: "linux", Arch: "amd64"}, Containers: containers}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	api := newFake()
+	if err := syncer(st, api).Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.created) != 0 {
+		t.Fatal("exited init job was queued for recreation")
+	}
+}
+
 // TestClientAgainstMCPServer exercises the real client over HTTP against an
 // MCP server exposing Taskboard's tool names and result shape.
 func TestClientAgainstMCPServer(t *testing.T) {
