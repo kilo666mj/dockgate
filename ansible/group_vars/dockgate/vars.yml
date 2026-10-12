@@ -61,6 +61,9 @@ dockgate_taskboard_requirements: "runner:local"
 dockgate_taskboard_approvers: []
 # Image reference prefixes built from your own repositories.
 dockgate_own_image_prefixes: []
+# Registries containers may run images from, e.g. [docker.io, ghcr.io]. Other
+# registries are reported as policy violations (never blocked). Empty: any.
+dockgate_policy_registries: []
 
 # Web UI for approving update jobs, on loopback behind an HTTPS proxy.
 # Empty disables it. It requires OIDC sign-in: register a client with

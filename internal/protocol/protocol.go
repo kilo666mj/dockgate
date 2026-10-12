@@ -96,6 +96,11 @@ type Container struct {
 	ComposeService string            `json:"compose_service,omitempty"`
 	Labels         map[string]string `json:"labels,omitempty"`
 	Update         *UpdateCheck      `json:"update,omitempty"`
+	// Privileged, NetworkMode and Binds (host paths bind-mounted into the
+	// container) are what the server's policy rules look at.
+	Privileged  bool     `json:"privileged,omitempty"`
+	NetworkMode string   `json:"network_mode,omitempty"`
+	Binds       []string `json:"binds,omitempty"`
 }
 
 // Image is one image on the host.

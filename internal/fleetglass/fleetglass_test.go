@@ -61,6 +61,16 @@ func TestBuildChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// A violation alpha keeps across reports stays as first seen.
+	for _, at := range []time.Time{now.Add(-time.Hour), now} {
+		if err := st.SavePolicyViolations(ctx, "agt_alpha", []store.PolicyViolation{{Container: "redis", Rule: "privileged", Detail: "runs privileged"}}, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if vs, err := st.PolicyViolations(ctx, "agt_alpha"); err != nil || len(vs) != 1 || !vs[0].FirstSeen.Equal(now.Add(-time.Hour).Truncate(time.Second)) {
+		t.Fatalf("violations = %+v, %v", vs, err)
+	}
+
 	checks, err := BuildChecks(ctx, st, 5*time.Minute, now)
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +84,8 @@ func TestBuildChecks(t *testing.T) {
 		"alpha/container_updates":           "warn",
 		"alpha/container_health":            "bad",
 		"alpha/container_vulnerabilities":   "warn",
+		"alpha/container_policy":            "warn",
+		"charlie/container_policy":          "ok",
 		"charlie/container_vulnerabilities": "ok",
 		"charlie/agent_health":              "bad",
 		"charlie/container_updates":         "ok",

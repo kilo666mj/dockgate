@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"go.michaelspost.com/dockgate/internal/pki"
+	"go.michaelspost.com/dockgate/internal/policy"
 	"go.michaelspost.com/dockgate/internal/protocol"
 	"go.michaelspost.com/dockgate/internal/store"
 )
@@ -42,6 +43,7 @@ type Hub struct {
 	hosts          []string
 	sbomRequests   bool
 	jobFinished    func(context.Context, store.Job)
+	policy         policy.Config
 
 	mu   sync.Mutex
 	cert tls.Certificate
@@ -62,6 +64,8 @@ type Config struct {
 	SBOMRequests bool
 	// JobFinished, if set, is called after an agent reports a job result.
 	JobFinished func(context.Context, store.Job)
+	// Policy configures the audit rules checked against every report.
+	Policy policy.Config
 }
 
 // New returns a Hub and issues its server certificate.
@@ -71,7 +75,7 @@ func New(cfg Config) (*Hub, error) {
 	}
 	h := &Hub{
 		store: cfg.Store, ca: cfg.CA, logger: cfg.Logger, reportInterval: cfg.ReportInterval,
-		certDir: cfg.CertDir, hosts: cfg.Hosts, sbomRequests: cfg.SBOMRequests, jobFinished: cfg.JobFinished,
+		certDir: cfg.CertDir, hosts: cfg.Hosts, sbomRequests: cfg.SBOMRequests, jobFinished: cfg.JobFinished, policy: cfg.Policy,
 	}
 	if err := h.refreshCertificate(); err != nil {
 		return nil, err
@@ -254,6 +258,15 @@ func (h *Hub) report(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("save report", "agent", agent.Name, "err", err)
 		h.fail(w, http.StatusInternalServerError, errors.New("could not save report"))
 		return
+	}
+	var violations []store.PolicyViolation
+	for _, c := range rep.Containers {
+		for _, v := range policy.Evaluate(h.policy, c) {
+			violations = append(violations, store.PolicyViolation{Container: c.Name, Rule: v.Rule, Detail: v.Detail})
+		}
+	}
+	if err := h.store.SavePolicyViolations(r.Context(), agent.ID, violations, time.Now()); err != nil {
+		h.logger.Error("save policy violations", "agent", agent.Name, "err", err)
 	}
 	resp := protocol.ReportResponse{NextReportSeconds: int(h.reportInterval / time.Second)}
 	if h.sbomRequests {

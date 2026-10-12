@@ -304,7 +304,7 @@ apply to enrollment, so it is not used.
   version, severity.
 - `vuln_ignores` — vulnerability ID, optional package/repository scope,
   reason, expires, created by.
-- `policy_violations` — container, rule, first/last seen, acknowledged.
+- `policy_violations` — agent, container name, rule, detail, first seen.
 - `jobs` — kind, target, requested by, gate decision, approval, state,
   result, timestamps.
 - `enrollment_tokens` — hash, expires, used by.
@@ -327,9 +327,12 @@ apply to enrollment, so it is not used.
    approval UI and read-only MCP tools are done; dockgate also files
    Taskboard tasks for updates that clear findings, and the web UI has fleet
    and host views (read-only) next to the job queue.*
-4. **Policy (audit).** Rules, exception labels, violation reporting.
+4. **Policy (audit).** Rules, exception labels, violation reporting. *Done:
+   the server evaluates the rules on every report and keeps current
+   violations with when each was first seen. The exception label
+   `dockgate.policy.allow` takes the place of an acknowledged flag.*
 5. **Migration.** Move every host over, then retire the old tool and its
-   notification relay.
+   notification relay. *Done.*
 6. **Optional enforcement.** Authorization plugin, per host, fail-open.
 
 ## Open questions

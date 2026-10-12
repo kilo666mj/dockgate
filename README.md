@@ -173,6 +173,28 @@ does not suppress a future actionable update. This needs a
 Taskboard that lets producers maintain their unclaimed tasks, and the
 credential's policy must allow the requirement token and `task:sensitive`.
 
+## Policy audit
+
+The server checks every running container in each report against these
+rules. It only reports what it finds; nothing is blocked.
+
+| Rule | Violation |
+| --- | --- |
+| `registry` | the image's registry is not in `-policy-registries` (off while that list is empty) |
+| `unpinned-tag` | the image is referenced by `latest` or no tag, without a digest |
+| `privileged` | the container runs privileged |
+| `docker-socket` | the container bind-mounts the Docker socket |
+| `host-network` | the container uses host networking |
+
+To accept a violation, label the container with the rules it may break:
+`dockgate.policy.allow=privileged,host-network`. Images the host built
+itself are not held to the two image rules.
+
+Violations appear on the host page of the web UI, in the
+`dockgate_fleet_status` and `dockgate_host_containers` MCP tools, and in the
+`container_policy` Fleetglass check. The last three rules need an agent new
+enough to report those settings; older agents never trip them.
+
 ## MCP for agents
 
 `dockgate server run -mcp-listen 127.0.0.1:8098 -mcp-token-file /etc/dockgate/mcp.token`
@@ -182,8 +204,8 @@ approve:
 
 | Tool | Returns |
 | --- | --- |
-| `dockgate_fleet_status` | per host: reporting state, container health, pending updates, fixable critical/high counts, scan coverage |
-| `dockgate_host_containers` | one host's containers with image, health, compose project and working directory, update status and fixable counts |
+| `dockgate_fleet_status` | per host: reporting state, container health, pending updates, fixable critical/high counts, scan coverage, policy violation count |
+| `dockgate_host_containers` | one host's containers with image, health, compose project and working directory, update status, fixable counts and policy violations |
 | `dockgate_pending_updates` | containers whose tag points to a newer image, with digests |
 | `dockgate_vulnerabilities` | findings after ignore rules (default: fixable critical and high), with a limit |
 | `dockgate_find_vulnerability` | which hosts and containers have a given CVE |
@@ -210,6 +232,7 @@ For each agent, filed under source `dockgate` with the agent's name as host:
 | `container_updates` | `pending_updates` | `warn` when any container's tag points at a newer image |
 | `container_health` | `containers` | `bad` when a container is unhealthy or restarting |
 | `container_vulnerabilities` | `fixable` | `warn` with a fixable critical or high finding, or when an image could not be scanned |
+| `container_policy` | `violations` | `warn` when a running container breaks a policy rule |
 
 ## Build and test
 
