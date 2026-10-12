@@ -32,6 +32,7 @@
     <div class="counts">
       {{with .Update}}{{if eq .Status "available"}}<span class="state as-is s-pending_approval" title="{{.RemoteDigest}}">update available · {{short .RemoteDigest}}</span>{{else if eq .Status "current"}}<span class="muted">up to date</span>{{else}}<span class="muted" title="{{.Error}}">update check {{.Status}}</span>{{end}}{{end}}
       {{if eq .Scan "scanned"}}{{if or .FixableCritical .FixableHigh}}<span><span class="sev critical">{{.FixableCritical}}</span> <span class="sev high">{{.FixableHigh}}</span> fixable</span>{{else}}<span class="muted">no fixable critical/high</span>{{end}}{{else if eq .Scan "failed"}}<span class="warn">scan failed</span>{{else}}<span class="muted">scan {{or .Scan "pending"}}</span>{{end}}
+      {{range .Policy}}<span class="warn untrusted">policy: {{.}}</span>{{end}}
       {{with .Job}}<a class="state s-{{.State}}" href="/jobs/{{.ID}}">job {{label .State}}</a>{{end}}
     </div>
   </li>

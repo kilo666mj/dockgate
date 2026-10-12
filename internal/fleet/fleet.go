@@ -34,6 +34,7 @@ type Host struct {
 	Scanned          int    `json:"scanned_containers"`
 	ScanPending      int    `json:"scan_pending_containers"`
 	ScanFailed       int    `json:"scan_failed_containers"`
+	PolicyViolations int    `json:"policy_violations"`
 	// LastReportAt is the agent's last report, for display; zero if never.
 	LastReportAt time.Time `json:"-"`
 }
@@ -57,6 +58,8 @@ type Container struct {
 	// Scan is the image's vulnerability scan state; fixable counts mean
 	// nothing until it is "scanned".
 	Scan string `json:"scan" jsonschema:"scanned, pending or failed"`
+	// Policy lists what the container does against the audit policy.
+	Policy []string `json:"policy_violations,omitempty"`
 }
 
 // Hosts summarises every active (not revoked) host, in name order.
@@ -107,6 +110,11 @@ func Hosts(ctx context.Context, st *store.Store, now time.Time) ([]Host, error) 
 				hs.UpdatesAvailable++
 			}
 		}
+		violations, err := st.PolicyViolations(ctx, a.ID)
+		if err != nil {
+			return nil, err
+		}
+		hs.PolicyViolations = len(violations)
 		cov := coverage[a.Name]
 		hs.Scanned, hs.ScanPending, hs.ScanFailed = cov.Scanned, cov.Pending, cov.Failed
 		out = append(out, hs)
@@ -146,13 +154,21 @@ func Containers(ctx context.Context, st *store.Store, a store.Agent, now time.Ti
 	if err != nil {
 		return nil, err
 	}
+	violations, err := st.PolicyViolations(ctx, a.ID)
+	if err != nil {
+		return nil, err
+	}
+	policy := map[string][]string{}
+	for _, v := range violations {
+		policy[v.Container] = append(policy[v.Container], v.Detail)
+	}
 	out := []Container{}
 	for _, c := range containers {
 		ci := Container{
 			Name: c.Name, Image: c.Image, ImageID: c.ImageID, State: c.State, Status: c.Status, Health: c.Health,
 			RestartCount: c.RestartCount, ComposeProject: c.ComposeProject, ComposeService: c.ComposeService,
 			ComposeWorkDir: c.Labels[LabelComposeWorkDir], Update: c.Update,
-			FixableCritical: per[c.Name].crit, FixableHigh: per[c.Name].high, Scan: scans[c.ID],
+			FixableCritical: per[c.Name].crit, FixableHigh: per[c.Name].high, Scan: scans[c.ID], Policy: policy[c.Name],
 		}
 		if !c.StartedAt.IsZero() {
 			ci.StartedAt = c.StartedAt.UTC().Format(time.RFC3339)

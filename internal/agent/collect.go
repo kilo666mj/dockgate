@@ -72,6 +72,12 @@ func (c *Collector) Collect(ctx context.Context) protocol.Report {
 			fail("inspect %s: %v", pc.Name, err)
 		} else {
 			pc.RestartCount, pc.Health, pc.StartedAt = d.RestartCount, d.Health(), d.StartedAt()
+			pc.Privileged, pc.NetworkMode = d.HostConfig.Privileged, d.HostConfig.NetworkMode
+			for _, m := range d.Mounts {
+				if m.Type == "bind" {
+					pc.Binds = append(pc.Binds, m.Source)
+				}
+			}
 			if d.Config.Image != "" {
 				// The configured reference survives the tag moving to a
 				// newer image, unlike the summary's Image field.

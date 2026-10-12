@@ -30,6 +30,7 @@ import (
 	"go.michaelspost.com/dockgate/internal/jobs"
 	"go.michaelspost.com/dockgate/internal/mcpapi"
 	"go.michaelspost.com/dockgate/internal/pki"
+	"go.michaelspost.com/dockgate/internal/policy"
 	"go.michaelspost.com/dockgate/internal/protocol"
 	"go.michaelspost.com/dockgate/internal/server"
 	"go.michaelspost.com/dockgate/internal/store"
@@ -159,6 +160,7 @@ func serverRun(args []string) error {
 	tbProject := fs.String("taskboard-project", envOr("DOCKGATE_TASKBOARD_PROJECT", "dockgate"), "Taskboard project for the tasks")
 	tbApprovers := fs.String("taskboard-approvers", os.Getenv("DOCKGATE_TASKBOARD_APPROVERS"), "comma-separated Taskboard person principals whose answer in an update task approves its job; empty means every job is approved here")
 	ownPrefixes := fs.String("own-image-prefixes", os.Getenv("DOCKGATE_OWN_IMAGE_PREFIXES"), "comma-separated image reference prefixes built from your own repositories (fixed by pull request instead of pull and recreate)")
+	policyRegistries := fs.String("policy-registries", os.Getenv("DOCKGATE_POLICY_REGISTRIES"), "comma-separated registries containers may run images from, e.g. docker.io,ghcr.io; other registries are reported as policy violations; empty turns the rule off")
 	mcpListen := fs.String("mcp-listen", os.Getenv("DOCKGATE_MCP_LISTEN"), "MCP (Streamable HTTP) listen address for agents via a TLS proxy, e.g. 127.0.0.1:8098; empty disables it")
 	mcpTokenFile := fs.String("mcp-token-file", os.Getenv("DOCKGATE_MCP_TOKEN_FILE"), "file holding the MCP bearer token (required with -mcp-listen)")
 	webListen := fs.String("web-listen", os.Getenv("DOCKGATE_WEB_LISTEN"), "web UI listen address behind a TLS proxy, e.g. 127.0.0.1:8099; empty disables it")
@@ -194,7 +196,7 @@ func serverRun(args []string) error {
 	h, err := hub.New(hub.Config{
 		Store: st, CA: ca, Logger: logger, ReportInterval: *reportInterval,
 		CertDir: *dataDir, Hosts: splitList(*agentHosts), SBOMRequests: *trivyBin != "",
-		JobFinished: jobSvc.Finished,
+		JobFinished: jobSvc.Finished, Policy: policy.Config{Registries: splitList(*policyRegistries)},
 	})
 	if err != nil {
 		return err

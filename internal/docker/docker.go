@@ -187,6 +187,14 @@ type ContainerDetail struct {
 	Config struct {
 		Image string `json:"Image"`
 	} `json:"Config"`
+	HostConfig struct {
+		Privileged  bool   `json:"Privileged"`
+		NetworkMode string `json:"NetworkMode"`
+	} `json:"HostConfig"`
+	Mounts []struct {
+		Type   string `json:"Type"`
+		Source string `json:"Source"`
+	} `json:"Mounts"`
 }
 
 // StartedAt parses the container's start time; it is zero for containers

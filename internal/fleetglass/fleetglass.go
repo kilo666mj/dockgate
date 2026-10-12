@@ -96,8 +96,9 @@ func (e *Exporter) ExportOnce(ctx context.Context) error {
 	return nil
 }
 
-// BuildChecks returns four checks per active agent: check-in freshness,
-// pending image updates, container health and fixable vulnerabilities.
+// BuildChecks returns five checks per active agent: check-in freshness,
+// pending image updates, container health, fixable vulnerabilities and
+// policy violations.
 func BuildChecks(ctx context.Context, st *store.Store, staleAfter time.Duration, now time.Time) ([]Check, error) {
 	agents, err := st.Agents(ctx)
 	if err != nil {
@@ -129,8 +130,12 @@ func BuildChecks(ctx context.Context, st *store.Store, staleAfter time.Duration,
 		if err != nil {
 			return nil, fmt.Errorf("agent %s: %w", a.Name, err)
 		}
+		violations, err := st.PolicyViolations(ctx, a.ID)
+		if err != nil {
+			return nil, fmt.Errorf("agent %s: %w", a.Name, err)
+		}
 		out = append(out, updatesCheck(a, containers, observed), healthCheck(a, containers, observed),
-			vulnCheck(a, byHost[a.Name], coverage[a.Name], observed))
+			vulnCheck(a, byHost[a.Name], coverage[a.Name], observed), policyCheck(a, violations, observed))
 	}
 	return out, nil
 }
@@ -212,6 +217,29 @@ func healthCheck(a store.Agent, containers []protocol.Container, observed string
 	if n := len(unhealthy) + len(restarting); n > 0 {
 		c.Status = "bad"
 		c.Summary = fmt.Sprintf("%d unhealthy or restarting containers", n)
+	}
+	return c
+}
+
+// policyCheck warns, never fails: the policy gate only audits.
+func policyCheck(a store.Agent, vs []store.PolicyViolation, observed string) Check {
+	type listed struct {
+		Container string `json:"container"`
+		Rule      string `json:"rule"`
+		Detail    string `json:"detail"`
+		FirstSeen string `json:"first_seen"`
+	}
+	list := []listed{}
+	for _, v := range vs {
+		list = append(list, listed{Container: v.Container, Rule: v.Rule, Detail: v.Detail, FirstSeen: v.FirstSeen.UTC().Format(time.RFC3339)})
+	}
+	c := Check{
+		Source: Source, Host: a.Name, Kind: "container_policy", Name: "violations", ObservedAt: observed,
+		Status: "ok", Summary: fmt.Sprintf("%d policy violations", len(vs)),
+		Data: map[string]any{"violation_count": len(vs), "violations": list},
+	}
+	if len(vs) > 0 {
+		c.Status = "warn"
 	}
 	return c
 }
