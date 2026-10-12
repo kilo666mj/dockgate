@@ -261,6 +261,11 @@ func (h *Hub) report(w http.ResponseWriter, r *http.Request) {
 	}
 	var violations []store.PolicyViolation
 	for _, c := range rep.Containers {
+		// buildx creates its builders privileged and without labels, so an
+		// operator could never clear or accept their violations.
+		if store.UpdateExempt(c.Name) != "" {
+			continue
+		}
 		for _, v := range policy.Evaluate(h.policy, c) {
 			violations = append(violations, store.PolicyViolation{Container: c.Name, Rule: v.Rule, Detail: v.Detail})
 		}
