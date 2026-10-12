@@ -188,7 +188,8 @@ rules. It only reports what it finds; nothing is blocked.
 
 To accept a violation, label the container with the rules it may break:
 `dockgate.policy.allow=privileged,host-network`. Images the host built
-itself are not held to the two image rules.
+itself are not held to the two image rules, and buildx builder containers
+are not audited.
 
 Violations appear on the host page of the web UI, in the
 `dockgate_fleet_status` and `dockgate_host_containers` MCP tools, and in the
