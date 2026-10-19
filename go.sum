@@ -52,8 +52,8 @@ github.com/yosida95/uritemplate/v3 v3.0.2 h1:Ed3Oyj9yrmi9087+NczuL5BwkIc4wvTb5zI
 github.com/yosida95/uritemplate/v3 v3.0.2/go.mod h1:ILOh0sOhIJR3+L/8afwt/kE++YT040gmv5BQTMR2HP4=
 go.michaelspost.com/mcpkit v0.2.0 h1:yPLKgDtPvYwM3QswkKjgV0hXWF7BTOfijCXl7kZN1Y0=
 go.michaelspost.com/mcpkit v0.2.0/go.mod h1:BtKSPI3IqSyowCfL3h6hQWdd1S8JaDPZWW2VeSkcp3E=
-go.michaelspost.com/oidcrp v0.3.0 h1:/3bSf4dNVVKs+/LmTSsl1c30WXzbTEe+3XhWuIx35V0=
-go.michaelspost.com/oidcrp v0.3.0/go.mod h1:Zo6dZUDc0lSB9iFO6EbJzhzgq9fmvthzh15Qe7mqqbQ=
+go.michaelspost.com/oidcrp v0.4.0 h1:htFs5fvwYB970DhtCwn1RDc2KLl1Ne7CDabyS+wDPbg=
+go.michaelspost.com/oidcrp v0.4.0/go.mod h1:Pl0E19k2NtjI1C0i1JMIuEvPFDYc8J6auWF4nPfUwIA=
 go.michaelspost.com/tintwire-go v0.4.0 h1:JOjY4zqH3RdlxBSQJJg+dyFH2xQn9iO/s06TGY9EzCI=
 go.michaelspost.com/tintwire-go v0.4.0/go.mod h1:DCrfJsZgTWaKHbEgmQHi7UajqVc1C2836dZQMq4owOo=
 golang.org/x/mod v0.41.0 h1:qJmnOUb4YB+FsEuM3HcWucdZASCPGhsX6uljO6pog0c=
