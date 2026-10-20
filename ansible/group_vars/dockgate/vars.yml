@@ -11,7 +11,7 @@ dockgate_listen: "127.0.0.1:8080"
 # Built locally and copied to the host.
 dockgate_goos: linux
 dockgate_goarch: amd64
-dockgate_go_toolchain: go1.27.1
+dockgate_go_toolchain: go1.27.3
 
 # Agent API: mutual TLS, so expose it directly rather than through a
 # TLS-terminating proxy. Agents must reach one of dockgate_agent_hosts.
