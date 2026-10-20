@@ -31,4 +31,4 @@ dockgate_server_binary: /usr/local/bin/dockgate
 
 # linux/amd64 or linux/arm64, per host.
 dockgate_agent_goarch: amd64
-dockgate_go_toolchain: go1.27.1
+dockgate_go_toolchain: go1.27.3
