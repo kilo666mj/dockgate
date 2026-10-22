@@ -158,3 +158,28 @@ func TestRegistryFallbackFillsAgentSlot(t *testing.T) {
 		t.Fatalf("missing candidate: err = %v", err)
 	}
 }
+
+// A local build on the containerd image store has a repo@sha256 digest, but
+// the registry never answered for it, so the server must not ask it.
+func TestRegistryFallbackSkipsUncheckedImages(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	now := time.Now()
+	id := enrolledWithContainers(t, s, "alpha",
+		protocol.Container{ID: "c1", Name: "nginx", Image: "local-nginx:1", ImageID: "sha256:local", Update: &protocol.UpdateCheck{
+			Status: protocol.UpdateUnknown, Reference: "local-nginx:1", LocalDigests: []string{localDigest}, Error: "UNAUTHORIZED"}},
+	)
+	if _, err := s.RequestSBOMs(ctx, id, 5, AgentQueue{}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SaveSBOM(ctx, id, protocol.SBOMUpload{ImageID: "sha256:local", Error: "Java DB update failed"}, now); err != nil {
+		t.Fatal(err)
+	}
+	targets, err := s.FallbackTargets(ctx, 5, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(targets) != 0 {
+		t.Fatalf("fallback targets for an image no registry answered for = %+v", targets)
+	}
+}

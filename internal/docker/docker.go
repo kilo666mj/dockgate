@@ -286,6 +286,8 @@ type RunSpec struct {
 	OutputFile string
 	// MaxOutput caps the output file; the run fails beyond it.
 	MaxOutput int64
+	// Network is the network mode. Empty means none, which every scan uses.
+	Network string
 }
 
 // RunResult is a finished one-shot container.
@@ -295,14 +297,18 @@ type RunResult struct {
 	Stderr   []byte
 }
 
-// Run creates, starts and waits for a locked-down container with no network,
-// a read-only root filesystem, a small tmpfs /tmp and no capabilities, then
-// returns its output file and standard error. The container and its
-// anonymous volume are always removed.
+// Run creates, starts and waits for a locked-down container with no network
+// (unless spec.Network says otherwise), a read-only root filesystem, a small
+// tmpfs /tmp and no capabilities, then returns its output file and standard
+// error. The container and its anonymous volume are always removed.
 func (c *Client) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 	volumes := map[string]any{}
 	if spec.WorkDir != "" {
 		volumes[spec.WorkDir] = map[string]any{}
+	}
+	network := spec.Network
+	if network == "" {
+		network = "none"
 	}
 	create := map[string]any{
 		"Image":   spec.Image,
@@ -312,7 +318,7 @@ func (c *Client) Run(ctx context.Context, spec RunSpec) (RunResult, error) {
 		"Volumes": volumes,
 		"HostConfig": map[string]any{
 			"Binds":          spec.Binds,
-			"NetworkMode":    "none",
+			"NetworkMode":    network,
 			"ReadonlyRootfs": true,
 			"Tmpfs":          map[string]string{"/tmp": "rw,size=64m"},
 			"CapDrop":        []string{"ALL"},
