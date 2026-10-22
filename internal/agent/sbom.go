@@ -38,10 +38,30 @@ const (
 	sbomQueueSize = 64
 )
 
+// Java index database. Trivy needs it to identify JAR files and cannot run
+// without it. The agent fetches it only after a scan fails for lack of it,
+// into a named volume that scans mount read-only.
+const (
+	JavaDBVolume       = "dockgate-trivy-java-db"
+	javaDBMount        = "/work/cache/java-db"
+	javaDBRefreshAfter = 24 * time.Hour
+)
+
+// scannerDocker is the part of the Docker client the generator uses.
+type scannerDocker interface {
+	ImageExists(ctx context.Context, ref string) (bool, error)
+	PullImage(ctx context.Context, repository, digest string) error
+	Run(ctx context.Context, spec docker.RunSpec) (docker.RunResult, error)
+	RemoveLabeled(ctx context.Context, label, value string) (int, error)
+}
+
 // SBOMGenerator inventories local images with the pinned scanner container.
+// It is used from one goroutine (SBOMWorker), so it needs no locking.
 type SBOMGenerator struct {
-	Docker     *docker.Client
+	Docker     scannerDocker
 	SocketPath string
+
+	javaDBAt time.Time // last successful Java DB fetch by this process
 }
 
 // Generate returns a CycloneDX JSON SBOM for a local image ID.
@@ -57,41 +77,92 @@ func (g *SBOMGenerator) Generate(ctx context.Context, imageID string) ([]byte, e
 	} else if !present {
 		return nil, errors.New("image is no longer on the host; a container still runs it, so recreate the container")
 	}
-	ref := ScannerRepository + "@" + ScannerDigest
-	ok, err := g.Docker.ImageExists(ctx, ref)
-	if err != nil {
-		return nil, fmt.Errorf("check scanner image: %w", err)
+	if err := g.ensureScanner(ctx); err != nil {
+		return nil, err
 	}
-	if !ok {
-		if err := g.Docker.PullImage(ctx, ScannerRepository, ScannerDigest); err != nil {
-			return nil, err
-		}
+	fresh := !g.javaDBAt.IsZero() && time.Since(g.javaDBAt) < javaDBRefreshAfter
+	doc, needsJavaDB, err := g.scan(ctx, imageID, fresh)
+	if err == nil || !needsJavaDB || fresh {
+		return doc, err
+	}
+	// The image has JAR files. Fetch the Java DB, then scan again offline.
+	if ferr := g.fetchJavaDB(ctx); ferr != nil {
+		return nil, fmt.Errorf("%w (fetching the Java DB also failed: %v)", err, ferr)
+	}
+	doc, _, err = g.scan(ctx, imageID, true)
+	return doc, err
+}
+
+func (g *SBOMGenerator) ensureScanner(ctx context.Context) error {
+	ok, err := g.Docker.ImageExists(ctx, ScannerRepository+"@"+ScannerDigest)
+	if err != nil {
+		return fmt.Errorf("check scanner image: %w", err)
+	}
+	if ok {
+		return nil
+	}
+	return g.Docker.PullImage(ctx, ScannerRepository, ScannerDigest)
+}
+
+// scan runs the scanner with no network. needsJavaDB reports a failure that
+// the Java DB would fix.
+func (g *SBOMGenerator) scan(ctx context.Context, imageID string, withJavaDB bool) (doc []byte, needsJavaDB bool, err error) {
+	// Packages only: no vulnerability scan here, so no database download
+	// and no network, which the container does not have. Trivy copies the
+	// exported image into TMPDIR, so that is the disk-backed work volume:
+	// a tmpfs fills on large images and aborts the export mid-stream.
+	cmd := []string{"image", "--quiet", "--format", "cyclonedx", "--cache-dir", "/work/cache",
+		"--output", "/work/sbom.json"}
+	binds := []string{g.SocketPath + ":/var/run/docker.sock:ro"}
+	if withJavaDB {
+		cmd = append(cmd, "--skip-java-db-update")
+		binds = append(binds, JavaDBVolume+":"+javaDBMount+":ro")
 	}
 	res, err := g.Docker.Run(ctx, docker.RunSpec{
-		Image: ref,
-		// Packages only: no vulnerability scan here, so no database download
-		// and no network, which the container does not have. Trivy copies the
-		// exported image into TMPDIR, so that is the disk-backed work volume:
-		// a tmpfs fills on large images and aborts the export mid-stream.
-		Cmd: []string{"image", "--quiet", "--format", "cyclonedx", "--cache-dir", "/work/cache",
-			"--output", "/work/sbom.json", imageID},
+		Image:      ScannerRepository + "@" + ScannerDigest,
+		Cmd:        append(cmd, imageID),
 		Env:        []string{"TMPDIR=/work"},
-		Binds:      []string{g.SocketPath + ":/var/run/docker.sock:ro"},
+		Binds:      binds,
 		Labels:     map[string]string{LabelRole: RoleSBOM},
 		WorkDir:    "/work",
 		OutputFile: "/work/sbom.json",
 		MaxOutput:  maxSBOMBytes,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if res.ExitCode != 0 {
-		return nil, fmt.Errorf("scanner exited %d: %s", res.ExitCode, lastLine(res.Stderr))
+		// The Java DB error is several lines above the last one.
+		needsJavaDB = strings.Contains(string(res.Stderr), "Java DB")
+		return nil, needsJavaDB, fmt.Errorf("scanner exited %d: %s", res.ExitCode, lastLine(res.Stderr))
 	}
 	if !json.Valid(res.Output) {
-		return nil, fmt.Errorf("scanner output is not JSON: %s", lastLine(res.Stderr))
+		return nil, false, fmt.Errorf("scanner output is not JSON: %s", lastLine(res.Stderr))
 	}
-	return res.Output, nil
+	return res.Output, false, nil
+}
+
+// fetchJavaDB downloads or updates the Java DB in its volume. This container
+// has network but no Docker socket and no image access: it can only write
+// the database. Trivy skips the download while the stored copy is current.
+func (g *SBOMGenerator) fetchJavaDB(ctx context.Context) error {
+	res, err := g.Docker.Run(ctx, docker.RunSpec{
+		Image:   ScannerRepository + "@" + ScannerDigest,
+		Cmd:     []string{"image", "--quiet", "--download-java-db-only", "--cache-dir", "/work/cache"},
+		Env:     []string{"TMPDIR=/work"},
+		Binds:   []string{JavaDBVolume + ":" + javaDBMount},
+		Labels:  map[string]string{LabelRole: RoleSBOM},
+		WorkDir: "/work",
+		Network: "bridge",
+	})
+	if err != nil {
+		return err
+	}
+	if res.ExitCode != 0 {
+		return fmt.Errorf("exited %d: %s", res.ExitCode, lastLine(res.Stderr))
+	}
+	g.javaDBAt = time.Now()
+	return nil
 }
 
 // Cleanup removes scanner containers left behind when a previous agent

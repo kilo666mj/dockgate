@@ -113,10 +113,20 @@ needs no vulnerability database, so the container runs with no network, a
 read-only root filesystem, all capabilities dropped and no-new-privileges,
 writing to an anonymous volume that is removed with it.
 
-Some images cannot be inventoried offline (Trivy needs its Java database for
-JAR files). When an agent reports an SBOM failure for an image with a
-registry digest, the server inventories that digest from the registry
-instead and stores the result for that agent and image.
+Images with JAR files need Trivy's Java index database, which maps JAR
+checksums to Maven coordinates (it holds no vulnerabilities). When a scan
+fails for lack of it, the agent fetches it into the named volume
+`dockgate-trivy-java-db` (about 1.5 GB) and scans again, still offline, with
+the volume mounted read-only. The fetch runs the same pinned scanner image
+with network but without the Docker socket or any image, so it can only
+write the database. It runs at most once a day, and only on hosts that have
+such images.
+
+If that fails too and the image has a registry digest that the registry
+has answered for (update status current or available), the server
+inventories that digest from the registry instead and stores the result for
+that agent and image. A local build never goes to a registry, even when the
+containerd image store gives it a repo@sha256 digest.
 
 ### On the server: matching against one database
 

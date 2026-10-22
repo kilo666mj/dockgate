@@ -280,6 +280,12 @@ func (s *Store) FallbackTargets(ctx context.Context, limit int, now time.Time) (
 			if ctr.ImageID != c.imageID || ctr.Update == nil || len(ctr.Update.LocalDigests) == 0 {
 				continue
 			}
+			// Only ask a registry that has answered for this repository. A
+			// local build on the containerd image store still carries a
+			// repo@sha256 digest, but no registry holds it.
+			if st := ctr.Update.Status; st != protocol.UpdateCurrent && st != protocol.UpdateAvailable {
+				continue
+			}
 			digest := ctr.Update.LocalDigests[0]
 			out = append(out, RegistryTarget{
 				Reference: Repository(ctr.Update.Reference) + "@" + digest, Digest: digest,
