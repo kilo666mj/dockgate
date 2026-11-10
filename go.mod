@@ -7,7 +7,7 @@ require (
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	go.michaelspost.com/mcpkit v0.2.0
 	go.michaelspost.com/oidcrp v0.4.4
-	go.michaelspost.com/tintwire-go v0.4.0
+	go.michaelspost.com/tintwire-go v0.5.0
 	modernc.org/sqlite v1.62.0
 )
 
