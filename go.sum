@@ -54,8 +54,8 @@ go.michaelspost.com/mcpkit v0.2.0 h1:yPLKgDtPvYwM3QswkKjgV0hXWF7BTOfijCXl7kZN1Y0
 go.michaelspost.com/mcpkit v0.2.0/go.mod h1:BtKSPI3IqSyowCfL3h6hQWdd1S8JaDPZWW2VeSkcp3E=
 go.michaelspost.com/oidcrp v0.4.4 h1:xk+2sNE38BkVJFedXgvvCm8gJ2VOMk1GbIaYC8C8XgM=
 go.michaelspost.com/oidcrp v0.4.4/go.mod h1:yTkVRwFoApO2LwCPqW8i9HBD8fZuXq8H+C4ynkumCbU=
-go.michaelspost.com/tintwire-go v0.4.0 h1:JOjY4zqH3RdlxBSQJJg+dyFH2xQn9iO/s06TGY9EzCI=
-go.michaelspost.com/tintwire-go v0.4.0/go.mod h1:DCrfJsZgTWaKHbEgmQHi7UajqVc1C2836dZQMq4owOo=
+go.michaelspost.com/tintwire-go v0.5.0 h1:7mO5Nv5nb5HKvRZY5CJ/3OaggAB8ByRbk4/h8hkwnwU=
+go.michaelspost.com/tintwire-go v0.5.0/go.mod h1:DCrfJsZgTWaKHbEgmQHi7UajqVc1C2836dZQMq4owOo=
 golang.org/x/mod v0.42.0 h1:ICeL3t2L30ljSPHHxDnR4fqVcBt/zR2zJAb9juavmQg=
 golang.org/x/mod v0.42.0/go.mod h1:u5fzIrRInkL8MaO1cbRkUHT64v303YIT5KEqpNr7jRs=
 golang.org/x/oauth2 v0.37.0 h1:JUlcxA8oAtauLfiH8FX2/FkAWHAdi0QtGCGc+hofE98=
