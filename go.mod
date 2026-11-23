@@ -8,7 +8,7 @@ require (
 	go.michaelspost.com/mcpkit v0.2.0
 	go.michaelspost.com/oidcrp v0.4.5
 	go.michaelspost.com/tintwire-go v0.5.0
-	modernc.org/sqlite v1.62.0
+	modernc.org/sqlite v1.63.0
 )
 
 require (
